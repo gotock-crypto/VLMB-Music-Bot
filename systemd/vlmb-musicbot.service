@@ -1,6 +1,6 @@
 [Unit]
 Description=VLMB Music Bot
-After=network-online.target redis-server.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
