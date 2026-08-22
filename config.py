@@ -52,7 +52,7 @@ LOG_BACKUP_COUNT = 5
 INSTANCE_LOCK_FILE = _env("INSTANCE_LOCK_FILE", "").strip()
 
 # Shared HTTP client.
-USER_AGENT = "KateMobileAndroid/51.1-442 (Android 11; SDK 30; arm64-v8a; ru_RU; Samsung SM-G991B)"
+USER_AGENT = "KateMobileAndroid/51.1-442 (Android 11; SDK 30; arm64-v8a; Samsung SM-G991B; ru_RU)"
 REQUEST_TIMEOUT = 25
 HTTP_CONNECT_TIMEOUT = 8
 HTTP_SOCK_CONNECT_TIMEOUT = 8
@@ -100,7 +100,7 @@ TG_FILE_ID_LOCAL_CACHE_MAX = 80000
 ENABLE_VK_MUSIC = True
 ENABLE_YANDEX_MUSIC = True
 ENABLE_YOUTUBE_MUSIC = True
-SOURCE_PRIORITY = "vk_first"  # fastest | yandex_first | vk_first | youtube_first
+SOURCE_PRIORITY = "vk_first"
 MAX_SEARCH_RESULTS = 1200
 MERGE_LIMIT_MULTIPLIER = 2
 SEARCH_CACHE_VERSION = "v2_youtube"
