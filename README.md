@@ -1,21 +1,23 @@
-# 🎵 VLMB Music Bot 3.0.0
+# 🎵 VLMB Music Bot 3.0.6
 
 Асинхронный Telegram-бот для поиска и скачивания музыки из Яндекс.Музыки, VK и YouTube.
 
-## Что есть в 3.0.0
+## Что есть в 3.0.6
 
-- 🔎 Search Engine 2.0: нормализация, artist/title scoring, дедупликация.
-- 🏥 Provider Router: классификация ошибок, circuit breaker и failover primitives.
-- ⚡ Redis + LRU cache и persistent Redis search sessions.
-- 📦 Bounded Download Queue: workers, retry, cancellation и concurrency limits.
-- 📚 `/playlist` и `/album` для URL-based playlist/album discovery через yt-dlp с пакетной очередью.
-- ❤️ История, избранное, повторная загрузка.
-- ⚙️ `/settings`: предпочтительный источник и качество.
-- 📊 Метрики: requests, downloads, provider health, P50/P95/P99 latency.
-- 🚨 Production health monitor с Telegram alert/recovery.
-- 🛡️ Secret scan, input/path safety helpers, rate limits.
-- 🚀 CI, preflight, release audit, deployment, backup и automatic rollback.
-- 🎲 Подборки, чарты, похожие исполнители и групповые digest.
+- 🔎 **Search Engine**: нормализация, artist/title scoring и дедупликация результатов.
+- 🏥 **Provider Router**: failover, классификация ошибок и circuit breaker primitives.
+- ⚡ **Cache**: Redis + LRU и persistent search sessions.
+- 📦 **Download Queue**: bounded async queue, workers, retry, cancellation и concurrency limits.
+- 📚 **Playlists / Albums**: URL-based discovery через yt-dlp с пакетной очередью.
+- ❤️ **История и избранное**: сохранение истории, избранных треков и повторная загрузка.
+- ❤️ **Native favorite button**: после скачивания избранное добавляется через Telegram callback без открытия `/start`.
+- 💔 **Remove from favorites**: кнопка переключается после успешного добавления.
+- ⚙️ **Settings**: предпочтительный источник и качество.
+- 📊 **Metrics**: requests, downloads, provider health и P50/P95/P99 latency.
+- 🚨 **Health monitor**: production-проверки и Telegram alerts/recovery.
+- 🛡️ **Security**: secret scan, input/path safety, rate limits и защита временных данных.
+- 🚀 **CI / Deployment**: GitHub Actions, preflight, release audit, backup, healthcheck и automatic rollback.
+- 🎲 **Discovery**: подборки, чарты, похожие исполнители и групповые digest.
 
 ## Бесплатный сервис
 
@@ -24,16 +26,16 @@ VLMB полностью бесплатен. В проекте **нет моне�
 ## Структура
 
 ```text
-music_bot_user_mixes.py   # Telegram application / existing bot behavior
-config.py                 # runtime configuration
+music_bot_user_mixes.py   # Основное приложение и существующая логика Telegram-бота
+config.py                 # Runtime-конфигурация
 services/
-  provider_router.py       # failover + circuit breaker
-  search_engine.py        # relevance ranking + dedup
-  provider_health.py      # provider metrics
-  metrics.py               # app metrics / latency
-  download_queue.py        # bounded async queue
-  playlist_manager.py     # playlist/album discovery
-  security.py              # input/path safety
+  provider_router.py       # Failover + circuit breaker
+  search_engine.py        # Ranking + dedup
+  provider_health.py      # Состояние провайдеров
+  metrics.py              # Метрики и latency
+  download_queue.py       # Bounded async queue
+  playlist_manager.py     # Playlist/album discovery
+  security.py             # Проверки входных данных и путей
 scripts/
   preflight.py
   healthcheck.py
@@ -52,28 +54,39 @@ systemd/
 
 - Ubuntu 24.04+
 - Python 3.12+
-- existing `/root/MusBot/venv`
-- `/root/MusBot/.env` with `0600`
-- SQLite databases are preserved by deployment
-- Redis is recommended; local LRU fallback remains available
+- production `.env` с секретами вне Git
+- существующий runtime `/root/MusBot/venv`
+- SQLite-данные сохраняются при deployment
+- Redis рекомендуется; локальный LRU fallback остаётся доступным
 
 ## Deployment
 
-Use `README_DEPLOYMENT_QUICK.md` for the exact production procedure.
+Для production используйте `README_DEPLOYMENT_QUICK.md` и `DEPLOYMENT.md`.
 
-The deployment script validates the release before cutover, creates a backup, preserves secrets/data, restarts the service, runs healthcheck, verifies a single bot process, and enables the 5-minute health monitor.
+Deployment script выполняет preflight/release validation, создаёт backup, сохраняет `.env` и данные, обновляет приложение, перезапускает systemd-сервис, выполняет healthcheck и при ошибке делает rollback.
 
-## Development checks
+## Проверки
+
+Перед release рекомендуется выполнить:
 
 ```bash
-python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py
+python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py tests/*.py
 python -m pytest -q
 python scripts/release_audit.py --ci
 ```
 
-Expected release test result for 3.0.0:
+Для релиза 3.0.6 в репозитории находятся regression-тесты для provider failover, search engine, metrics, security, playlist manager, navigation и favorite callback/UID logic.
 
-```text
-18 passed
-Release audit OK
-```
+## Безопасность
+
+Секреты не хранятся в Git. Используйте production `.env` на сервере и `.env.example` как шаблон. Файл `.env` исключён из репозитория.
+
+Не добавляйте Telegram token, API keys, Redis credentials или другие production secrets в issues, commits, logs или архивы релиза.
+
+## Git Source of Truth
+
+Начиная с production release **3.0.6**, Git `master` является источником истины для production-кода. Production-релиз должен собираться из зафиксированного Git commit и проходить CI, release audit, preflight и healthcheck.
+
+## Лицензия
+
+MIT License
