@@ -1,45 +1,93 @@
-# 🎵 VLMB Music Bot 3.0.6
+# 🎵 VLMB Music Bot 4.0.0-rc1
 
 Асинхронный Telegram-бот для поиска и скачивания музыки из Яндекс.Музыки, VK и YouTube.
 
-## Что есть в 3.0.6
+> **Статус:** `4.0.0-rc1` — Architecture & Reliability Release Candidate.
+>
+> Production уже работает на RC1. При этом 4.0 остаётся поэтапным архитектурным refactor: `music_bot_user_mixes.py` пока сохраняется как compatibility bootstrap, а новые границы вводятся постепенно с обязательными тестами.
+
+## Что есть в 4.0.0-rc1
+
+### Пользовательские возможности
 
 - 🔎 **Search Engine**: нормализация, artist/title scoring и дедупликация результатов.
-- 🏥 **Provider Router**: failover, классификация ошибок и circuit breaker primitives.
-- ⚡ **Cache**: Redis + LRU и persistent search sessions.
-- 📦 **Download Queue**: bounded async queue, workers, retry, cancellation и concurrency limits.
-- 📚 **Playlists / Albums**: URL-based discovery через yt-dlp с пакетной очередью.
+- 🎵 **Music providers**: Яндекс.Музыка, VK и YouTube.
 - ❤️ **История и избранное**: сохранение истории, избранных треков и повторная загрузка.
-- ❤️ **Native favorite button**: после скачивания избранное добавляется через Telegram callback без открытия `/start`.
-- 💔 **Remove from favorites**: кнопка переключается после успешного добавления.
+- ❤️ **Native favorite callback**: добавление в избранное непосредственно через Telegram callback без возврата в `/start`.
+- 💔 **Remove from favorites**: кнопка меняется после успешного добавления.
+- 👥 **Discovery**: похожие исполнители, подборки и чарты.
+- 📚 **Playlists / Albums**: URL-based discovery с пакетной обработкой.
 - ⚙️ **Settings**: предпочтительный источник и качество.
-- 📊 **Metrics**: requests, downloads, provider health и P50/P95/P99 latency.
-- 🚨 **Health monitor**: production-проверки и Telegram alerts/recovery.
+
+### Reliability & Production
+
+- 🧭 **Callback / State Audit**: каталог callback namespaces и проверка регистрации callback-префиксов.
+- 🧠 **State Machine**: формализованные критические state transitions.
+- 🔌 **Provider Adapters**: единый интерфейс `search()`, `download()` и `health()` для provider implementations.
+- 🏥 **Provider Router**: failover, error classification и circuit-breaker primitives.
+- 📦 **Download Queue**: bounded async queue, workers, retry, cancellation и concurrency limits.
+- ⚡ **Cache**: Redis + LRU fallback и persistent search sessions.
+- 📊 **Metrics**: request/download metrics, provider health и P50/P95/P99 latency.
+- 🚨 **Health Monitor**: production healthchecks и recovery alerts.
 - 🛡️ **Security**: secret scan, input/path safety, rate limits и защита временных данных.
-- 🚀 **CI / Deployment**: GitHub Actions, preflight, release audit, backup, healthcheck и automatic rollback.
-- 🎲 **Discovery**: подборки, чарты, похожие исполнители и групповые digest.
+- 🚀 **CI / Deployment**: GitHub Actions, preflight, release audit, backup, healthcheck и rollback flow.
+- 🔬 **Architecture Audit**: проверка границ `application / domain / providers / storage`.
+- 🧪 **Critical-flow tests**: callback/state contracts, provider adapters, queue/load smoke и rollback drill tests.
 
-## Бесплатный сервис
+## Архитектура 4.0
 
-VLMB полностью бесплатен. В проекте **нет монетизации, Premium, платежей или подписок**.
+```text
+Telegram / bot handlers
+        |
+        v
+application
+  commands / callbacks / state
+        |
+        v
+domain
+  models / policies / errors
+     |             |
+     v             v
+ providers       storage
+   |               |
+   v               v
+ YM / VK / YT   SQLite / session state
+```
+
+Ключевое правило миграции: каждая новая выделенная ответственность получает тесты **до** удаления старой реализации. Именно поэтому основной `music_bot_user_mixes.py` пока остаётся compatibility bootstrap. citeturn9file0
 
 ## Структура
 
 ```text
-music_bot_user_mixes.py   # Основное приложение и существующая логика Telegram-бота
+music_bot_user_mixes.py   # Compatibility bootstrap + существующая Telegram-логика
 config.py                 # Runtime-конфигурация
+application/
+  callbacks/              # Callback catalog + audit
+  state/                  # State machine / transitions
+domain/
+  models.py               # Domain models
+  errors.py               # Domain errors
+providers/
+  base.py                 # Единый provider contract
+  adapters.py             # Provider adapters
+storage/
+  contracts.py            # Storage/session contracts
 services/
-  provider_router.py       # Failover + circuit breaker
-  search_engine.py        # Ranking + dedup
+  provider_router.py      # Failover + circuit breaker primitives
   provider_health.py      # Состояние провайдеров
   metrics.py              # Метрики и latency
   download_queue.py       # Bounded async queue
+  search_engine.py        # Ranking + dedup
   playlist_manager.py     # Playlist/album discovery
   security.py             # Проверки входных данных и путей
 scripts/
   preflight.py
   healthcheck.py
   release_audit.py
+  callback_audit.py
+  architecture_audit.py
+  load_test_queue.py
+  rollback_drill.py
   deploy_release.sh
   rollback_release.sh
   monitor.py
@@ -63,19 +111,39 @@ systemd/
 
 Для production используйте `README_DEPLOYMENT_QUICK.md` и `DEPLOYMENT.md`.
 
-Deployment script выполняет preflight/release validation, создаёт backup, сохраняет `.env` и данные, обновляет приложение, перезапускает systemd-сервис, выполняет healthcheck и при ошибке делает rollback.
+Deployment flow:
+
+```text
+backup
+  ↓
+preflight / release audit
+  ↓
+install / update
+  ↓
+systemd restart
+  ↓
+healthcheck
+  ↓
+SUCCESS
+```
+
+При ошибке deployment должен обеспечивать rollback к предыдущему рабочему release. Для 4.0.0-rc1 дополнительно предусмотрен rollback drill. Перед RC1 должны пройти CI и server-side Telegram smoke tests; pre-release backup следует сохранять до завершения проверки. citeturn9file0
 
 ## Проверки
 
-Перед release рекомендуется выполнить:
+Локально или в CI рекомендуется выполнить:
 
 ```bash
 python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py tests/*.py
 python -m pytest -q
 python scripts/release_audit.py --ci
+python scripts/callback_audit.py
+python scripts/architecture_audit.py
+python scripts/load_test_queue.py --jobs 100 --concurrency 10 --work-ms 20
+python scripts/rollback_drill.py
 ```
 
-Для релиза 3.0.6 в репозитории находятся regression-тесты для provider failover, search engine, metrics, security, playlist manager, navigation и favorite callback/UID logic.
+Для 4.0.0-rc1 в репозитории находятся regression-тесты для callback/state contracts, critical flows, provider adapters/failover, queue/load behavior, rollback drill и storage contracts.
 
 ## Безопасность
 
@@ -83,9 +151,19 @@ python scripts/release_audit.py --ci
 
 Не добавляйте Telegram token, API keys, Redis credentials или другие production secrets в issues, commits, logs или архивы релиза.
 
+## Бесплатный сервис
+
+VLMB полностью бесплатен. В проекте **нет монетизации, Premium, платежей или подписок**.
+
 ## Git Source of Truth
 
-Начиная с production release **3.0.6**, Git `master` является источником истины для production-кода. Production-релиз должен собираться из зафиксированного Git commit и проходить CI, release audit, preflight и healthcheck.
+`master` является источником истины для production-кода. Production-релиз должен собираться из зафиксированного Git commit и проходить CI, release audit, preflight и healthcheck.
+
+Текущий release candidate:
+
+```text
+VLMB 4.0.0-rc1
+```
 
 ## Лицензия
 
