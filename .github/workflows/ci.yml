@@ -20,5 +20,19 @@ jobs:
         run: python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py
       - name: Tests
         run: python -m pytest -q
+      - name: Callback audit
+        run: python scripts/callback_audit.py
+      - name: Architecture audit
+        run: python scripts/architecture_audit.py
       - name: Release audit
-        run: python scripts/release_audit.py
+        run: python scripts/release_audit.py --ci
+      - name: Clean checkout manifest
+        run: |
+          test -f RELEASE_VERSION
+          test "$(cat RELEASE_VERSION)" = "4.0.0-rc1"
+          test ! -e .env
+          test ! -d venv
+      - name: Queue load smoke
+        run: python scripts/load_test_queue.py --jobs 50 --concurrency 5 --work-ms 2
+      - name: Rollback drill simulation
+        run: python scripts/rollback_drill.py

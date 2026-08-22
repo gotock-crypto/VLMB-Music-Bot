@@ -139,3 +139,20 @@ class ProviderRouter:
             summary = "; ".join(f"{e.provider}:{e.kind}" for e in errors)
             raise ProviderFailure("router", operation, "all_failed", summary) from errors[-1]
         return []
+
+# ---- VLMB 4.0 adapter boundary -------------------------------------------------
+# These helpers let new application code depend on the provider contract without
+# forcing a flag-day rewrite of the existing call(provider, operation, fn) API.
+async def _adapter_call(router: ProviderRouter, adapter, operation: str, fn):
+    return await router.call(adapter.name, operation, fn)
+
+async def adapter_failover(router: ProviderRouter, operation: str, adapters, invoke):
+    """Run the same failover policy against MusicProviderAdapter instances.
+
+    `invoke(adapter)` must return an awaitable. Keeping invocation outside the
+    router makes the router independent of Telegram/provider implementations.
+    """
+    return await router.failover(
+        operation,
+        ((adapter.name, lambda adapter=adapter: invoke(adapter)) for adapter in adapters),
+    )

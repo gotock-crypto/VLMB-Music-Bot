@@ -59,6 +59,8 @@ from services.metrics import MetricsRegistry
 from services.download_queue import DownloadQueue
 from services.playlist_manager import PlaylistManager
 from services.search_scoring import rank_tracks_by_artist as _legacy_rank_tracks_by_artist
+from providers import YandexProviderAdapter, VKProviderAdapter, YouTubeProviderAdapter
+from storage import InMemoryUserStateStore
 
 # Импорт Яндекс.Музыки
 try:
@@ -2699,7 +2701,9 @@ class AsyncMusicBot:
     
     def __init__(self):
         self.user_sessions: Dict[int, Dict] = {}
+        # Compatibility mirror for legacy handlers; persistence boundary lives in storage.
         self.user_states: Dict[int, Dict] = {}
+        self.state_store = InMemoryUserStateStore()
         self.session: Optional[aiohttp.ClientSession] = None
         self._initialized = False
         
@@ -2719,6 +2723,13 @@ class AsyncMusicBot:
         self.vk_token_manager = AsyncVKTokenManager()
         self.yandex_music = YandexMusicManager()
         self.youtube_music = YoutubeMusicManager()
+        # VLMB 4.0 provider boundary. Existing managers remain the implementation;
+        # application code can migrate to these adapters incrementally.
+        self.providers = {
+            "yandex": YandexProviderAdapter(self.yandex_music),
+            "vk": VKProviderAdapter(self.search_vk_music),
+            "youtube": YouTubeProviderAdapter(self.youtube_music),
+        }
         self.provider_health = ProviderHealth()
         self.provider_router = ProviderRouter(
             cooldown_seconds=getattr(config, "PROVIDER_COOLDOWN_SECONDS", 30),
@@ -3200,26 +3211,30 @@ class AsyncMusicBot:
                 logger.debug(f"Keepalive loop error: {e}")
 
     async def set_user_state(self, user_id: int, state: str, data: Dict = None):
-        """Установка состояния пользователя"""
+        """Set state through the storage boundary while preserving legacy access."""
+        payload = dict(data or {})
+        await self.state_store.set(user_id, state, payload)
         self.user_states[user_id] = {
-            'state': state,
-            'data': data or {},
-            'timestamp': time.time()
+            'state': state, 'data': payload, 'timestamp': time.time()
         }
-    
+
     async def get_user_state(self, user_id: int) -> Optional[Dict]:
-        """Получение состояния пользователя"""
-        state_data = self.user_states.get(user_id)
-        if state_data and time.time() - state_data['timestamp'] < config.USER_STATE_TIMEOUT:
-            return state_data
-        elif state_data:
-            del self.user_states[user_id]
+        """Get state through storage; keep the legacy timestamp contract."""
+        state_data = await self.state_store.get(user_id)
+        if not state_data:
+            return None
+        legacy = self.user_states.get(user_id)
+        if legacy and time.time() - legacy['timestamp'] < config.USER_STATE_TIMEOUT:
+            return legacy
+        if legacy:
+            self.user_states.pop(user_id, None)
+            await self.state_store.clear(user_id)
         return None
-    
+
     async def clear_user_state(self, user_id: int):
-        """Очистка состояния пользователя"""
-        if user_id in self.user_states:
-            del self.user_states[user_id]
+        """Clear state through the storage boundary."""
+        await self.state_store.clear(user_id)
+        self.user_states.pop(user_id, None)
     
     @staticmethod
     def _artist_query(query: str) -> str:

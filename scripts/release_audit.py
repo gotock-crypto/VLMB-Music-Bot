@@ -21,7 +21,17 @@ REQUIRED = [
     "tests/test_provider_router.py", "tests/test_search_engine.py",
     "tests/test_metrics.py", "tests/test_security.py",
     "tests/test_playlist_manager.py", ".github/workflows/ci.yml",
-    "RELEASE_VERSION", "RELEASE_MANIFEST.md",
+    "RELEASE_VERSION", "RELEASE_MANIFEST.md", "pytest.ini",
+    "ARCHITECTURE_4.0.md", "UPGRADE_4.0_RC1.md",
+    "application/callbacks/catalog.py", "application/callbacks/audit.py",
+    "application/state/machine.py", "domain/models.py", "domain/errors.py",
+    "providers/base.py", "providers/adapters.py", "storage/contracts.py",
+    "scripts/callback_audit.py", "scripts/architecture_audit.py",
+    "scripts/load_test_queue.py", "scripts/rollback_drill.py",
+    "tests/test_callback_audit.py", "tests/test_critical_flows.py",
+    "tests/test_provider_adapters.py", "tests/test_state_machine.py",
+    "tests/test_storage_contract.py", "tests/test_load_script.py",
+    "tests/test_rollback_drill.py",
 ]
 SECRET_PATTERNS = [
     re.compile(r"api\.telegram\.org/bot\d{5,}:[A-Za-z0-9_-]+"),

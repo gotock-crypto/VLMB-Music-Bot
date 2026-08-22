@@ -25,19 +25,22 @@ command -v rsync >/dev/null || fail "rsync is required"
   "$RELEASE_DIR/services"/*.py \
   "$RELEASE_DIR/scripts"/*.py
 
-# Bring the existing runtime up to the release requirements before the cutover.
-if [[ -f "$RELEASE_DIR/requirements.txt" ]]; then
-  "$VENV/bin/pip" install -r "$RELEASE_DIR/requirements.txt"
-fi
-
 cd /root
-# Backup code + production data, but never secrets or the runtime venv.
+# Backup code + production data before any runtime/dependency mutation.
+# Never secrets or the production venv.
 tar -czf "$BACKUP" \
   --exclude='MusBot/venv' \
   --exclude='MusBot/.env' \
   MusBot
 
 echo "Backup: $BACKUP"
+
+# Bring the existing runtime up to the release requirements only after the
+# backup exists, so a failed dependency operation cannot leave us without a
+# recoverable application snapshot.
+if [[ -f "$RELEASE_DIR/requirements.txt" ]]; then
+  "$VENV/bin/pip" install -r "$RELEASE_DIR/requirements.txt"
+fi
 
 rollback() {
   local rc=$?
@@ -65,6 +68,9 @@ rollback() {
     fi
     systemctl daemon-reload >/dev/null 2>&1 || true
     systemctl start "$SERVICE" >/dev/null 2>&1 || true
+    if ! systemctl is-active --quiet "$SERVICE"; then
+      echo "ERROR: rollback restored files but service did not start" >&2
+    fi
     rm -rf "$BACKUP_DIR"
   fi
   exit "$rc"
@@ -84,6 +90,13 @@ rsync -a --delete \
   --exclude='bot-debug.log' \
   --exclude='venv/' \
   "$RELEASE_DIR/" "$APP_DIR/"
+
+# Guarded production rollback drill: after cutover, deliberately fail once so the ERR trap
+# must restore the previous application tree. Never enable this in normal releases.
+if [[ "${FORCE_FAIL_AFTER_CUTOVER:-0}" == "1" ]]; then
+  echo "FORCE_FAIL_AFTER_CUTOVER=1: intentionally failing after code cutover to verify rollback" >&2
+  false
+fi
 
 cp "$APP_DIR/systemd/vlmb-musicbot.service" /etc/systemd/system/musicbot.service
 if [[ -f "$APP_DIR/systemd/vlmb-healthcheck.service" && -f "$APP_DIR/systemd/vlmb-healthcheck.timer" ]]; then
