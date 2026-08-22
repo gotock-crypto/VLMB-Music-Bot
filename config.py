@@ -7,9 +7,10 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+# Secrets and API credentials. Environment variables override stored values.
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN", "").strip()
-YANDEX_TOKEN = _env("YANDEX_TOKEN", "").strip()
 VK_TOKEN = _env("VK_TOKEN", "").strip()
+YANDEX_TOKEN = _env("YANDEX_TOKEN", "").strip()
 LASTFM_API_KEY = _env("LASTFM_API_KEY", "").strip()
 
 # Access control.
@@ -24,7 +25,7 @@ DB_WAL_MODE = True
 DATABASE_TIMEOUT = 20
 
 # Redis and transient user/search sessions.
-REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
+REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0").strip()
 REDIS_MAX_CONNECTIONS = 80
 REDIS_TIMEOUT = 3
 SESSION_REDIS_PREFIX = "vlmb:sess:"
@@ -48,7 +49,7 @@ LOG_LEVEL = "INFO"
 LOG_FILE = "bot-debug.log"
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
-INSTANCE_LOCK_FILE = ""
+INSTANCE_LOCK_FILE = _env("INSTANCE_LOCK_FILE", "").strip()
 
 # Shared HTTP client.
 USER_AGENT = "KateMobileAndroid/51.1-442 (Android 11; SDK 30; arm64-v8a; Samsung SM-G991B; ru_RU)"
@@ -200,3 +201,9 @@ EXCEL_WARMUP_MIN_TRACKS_PER_ARTIST = 1
 EXCEL_WARMUP_MAX_ARTISTS = 1_000_000
 EXCEL_WARMUP_CONCURRENCY = 2
 EXCEL_WARMUP_SEND_DELAY = 0.15
+
+
+# Runtime diagnostics. Keep these disabled/low-noise by default in production.
+PROVIDER_METRICS_LOG_INTERVAL = 300
+SEARCH_METRICS_LOG_INTERVAL = 300
+HEALTHCHECK_DB_PATHS = (STATS_DB_PATH, VK_TOKENS_DB_PATH)
