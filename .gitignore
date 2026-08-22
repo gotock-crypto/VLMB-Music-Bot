@@ -1,16 +1,12 @@
-# Secrets
-.env
-*.env
-
-# Python
 __pycache__/
-*.pyc
+*.py[cod]
 venv/
-*.log
+.env
 *.db
 *.db-shm
 *.db-wal
-
-# IDE
-.vscode/
-.idea/
+*.log
+*.log.*
+*.tmp
+*.part
+.DS_Store

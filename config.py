@@ -7,10 +7,10 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
-TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN", "")
-YANDEX_TOKEN = _env("YANDEX_TOKEN", "")
-VK_TOKEN = _env("VK_TOKEN", "")
-LASTFM_API_KEY = _env("LASTFM_API_KEY", "")
+TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN", "").strip()
+YANDEX_TOKEN = _env("YANDEX_TOKEN", "").strip()
+VK_TOKEN = _env("VK_TOKEN", "").strip()
+LASTFM_API_KEY = _env("LASTFM_API_KEY", "").strip()
 
 # Access control.
 OWNER_ID = 0
