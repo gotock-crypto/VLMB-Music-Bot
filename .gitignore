@@ -10,3 +10,7 @@ venv/
 *.tmp
 *.part
 .DS_Store
+
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,34 +1,45 @@
-# VLMB Music Bot — Production Audit
+# Production audit snapshot
 
-Date: 2026-08-22
+Source: server archive supplied for this project, plus the current public Git repository.
 
-## Production
+## Snapshot data
 
-- Host: `45.43.90.131`
-- Application: `/root/MusBot`
-- systemd: `musicbot.service`
-- Runtime: Python 3.12 virtual environment
-- Production `.env`: external to Git, mode `0600`
+The supplied SQLite snapshot contains approximately:
 
-## Release verification
+- 260 users
+- 150 chats
+- 7,988 stats events
+- 7,287 user actions
+- 1,446 user history records
+- 4,193 Telegram audio `file_id` cache records
+- 1,403 sent digest-track records
+- 2 digest subscriptions
+- 3 VK token records
 
-- Python compile: passed
-- Imports: passed
-- Regression tests: `10 passed`
-- Preflight with production `.env`: passed
-- SQLite integrity: `bot_stats.db` and `vk_tokens.db` passed
-- Healthcheck after deployment: passed
-- Exactly one bot process after restart: passed
-- Telegram smoke-test: accepted by user
+Both supplied SQLite databases passed `PRAGMA integrity_check` before release packaging.
 
-## Deployment safety
+## Main findings
 
-Deployment validates the release before stopping the running service, creates a production backup, preserves `.env`, `venv`, SQLite databases and logs during code replacement, and contains an automatic rollback path.
+### P0 — credentials
 
-## Known optional infrastructure
+The server snapshot contained hard-coded Telegram/Yandex/Last.fm credentials in `config.py`, and the historical `bot.log` contained Telegram Bot API URLs with the bot token embedded in them. The release removes credentials from source and redacts the supplied logs. Production should still rotate the exposed credentials.
 
-Redis is not required for startup and may remain unavailable. The bot continues with local/in-memory behavior.
+### P0 — deployment drift
 
-## Known follow-up
+The production snapshot and Git version are not identical. The release therefore keeps the existing monolith behavior and adds explicit deployment/rollback tooling rather than replacing the production tree blindly.
 
-YouTube/yt-dlp edge cases such as individual live events or provider-side restrictions remain separate operational issues; they do not invalidate the successful production deployment.
+### P1 — provider reliability
+
+The supplied logs showed YouTube/yt-dlp JavaScript-runtime and HTTP 403 failures, plus Yandex HTTP 451 responses. Existing fallback logic is retained. The release adds in-process provider search/download success-rate and latency metrics so these issues can be observed without changing routing behavior.
+
+### P1 — Telegram polling conflicts
+
+The supplied historical log contains repeated HTTP 409 `getUpdates` conflicts. This usually means more than one polling client was active. The existing single-instance lock remains in place, and the deployment procedure explicitly checks for exactly one bot process after restart.
+
+### P1 — architecture
+
+The main bot remains a large monolithic module. To minimize regression risk, this release extracts only the existing artist-first ranking rule into a tested module and adds provider health as a separate low-risk service. A broader handler/provider/storage decomposition should be done later in small, tested steps.
+
+## Release safety principle
+
+No database schema migration, destructive data operation, or replacement of the production virtualenv is part of this release. Deployment excludes `.env`, SQLite databases, runtime logs, and `venv/` from the code sync.

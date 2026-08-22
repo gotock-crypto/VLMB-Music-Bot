@@ -23,7 +23,7 @@ def test_rollback_does_not_delete_venv_or_env():
     assert "[[ -x \"$APP_DIR/venv/bin/python3\" ]]" in text
     assert "--exclude='.env'" in text
     assert "--exclude='venv/'" in text
-    assert 'rm -rf "$APP_DIR"' not in text
+    assert "rm -rf \"$APP_DIR\"" not in text
 
 
 def test_preflight_supports_explicit_env_file():

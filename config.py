@@ -103,7 +103,22 @@ ENABLE_YOUTUBE_MUSIC = True
 SOURCE_PRIORITY = "vk_first"  # fastest | yandex_first | vk_first | youtube_first
 MAX_SEARCH_RESULTS = 1200
 MERGE_LIMIT_MULTIPLIER = 2
-SEARCH_CACHE_VERSION = "v2_youtube"
+SEARCH_CACHE_VERSION = "v3_engine"
+
+# Provider routing / circuit breaker.
+PROVIDER_FAILURE_THRESHOLD = 2
+PROVIDER_COOLDOWN_SECONDS = 30
+
+# Global queue and abuse protection.
+DOWNLOAD_QUEUE_WORKERS = 3
+DOWNLOAD_QUEUE_MAX_SIZE = 100
+GLOBAL_DOWNLOAD_LIMIT = 12
+MAX_PLAYLIST_TRACKS = 100
+
+# Observability.
+METRICS_LOG_INTERVAL = 300
+METRICS_HISTORY_SAMPLES = 5000
+
 
 # VK Music.
 VK_API_URL = "https://api.vk.com/method/audio.search"
@@ -136,7 +151,7 @@ YOUTUBE_FFMPEG_LOCATION = ""  # Empty string searches PATH.
 YOUTUBE_COOKIE_FILE = ""
 
 # Search result UI and background enrichment.
-SONGS_PER_PAGE = 10
+SONGS_PER_PAGE = 8
 GROUP_CHAT_RESULTS_COUNT = 5
 GROUP_CHAT_BEST_CACHE_COUNT = 30
 BUTTON_TEXT_MAX_LENGTH = 48
@@ -159,6 +174,7 @@ TRACK_CREDIT_CAPTION = 'Скачано через <a href="https://t.me/VLMB_1_b
 
 # User history.
 HISTORY_LIMIT = 20
+FAVORITES_LIMIT = 50
 
 # Last.fm similar artists.
 POPULAR_TRACKS_LIMIT = 15

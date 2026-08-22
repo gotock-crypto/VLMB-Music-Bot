@@ -52,6 +52,13 @@ from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError, RetryAfter, TelegramError, BadRequest
 
 import config
+from services.provider_health import ProviderHealth
+from services.provider_router import ProviderRouter, ProviderFailure
+from services.search_engine import rank_tracks as _rank_tracks
+from services.metrics import MetricsRegistry
+from services.download_queue import DownloadQueue
+from services.playlist_manager import PlaylistManager
+from services.search_scoring import rank_tracks_by_artist as _legacy_rank_tracks_by_artist
 
 # Импорт Яндекс.Музыки
 try:
@@ -96,6 +103,9 @@ if config.LOG_FILE:
 # Do not leak bot tokens through full Telegram API URLs in INFO logs.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+# Never allow HTTP client request URLs (which may contain Telegram bot tokens) into normal logs.
+logging.getLogger("httpx").propagate = False
+logging.getLogger("httpcore").propagate = False
 
 logger = logging.getLogger(__name__)
 
@@ -341,7 +351,8 @@ def private_main_keyboard():
         [
             ["🔎 Поиск", "🔥 Чарты"],
             ["🎲 Подборка", "🎧 Похожие"],
-            ["❓ Помощь"],
+            ["❤️ Избранное", "📚 История"],
+            ["⚙️ Настройки", "❓ Помощь"],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -349,10 +360,44 @@ def private_main_keyboard():
     )
 
 
+_PRIVATE_MENU_ACTIONS = {
+    "🔎 Поиск": "search",
+    "🔍 Поиск": "search",
+    "🔍 Поиск музыки": "search",
+    "🔥 Чарты": "charts",
+    "📊 Чарты": "charts",
+    "🎲 Подборка": "mix",
+    "🎲 Подборка по жанру": "mix",
+    "🎧 Похожие": "similar",
+    "👥 Похожие исполнители": "similar",
+    "❤️ Избранное": "favorites",
+    "📚 История": "history",
+    "⚙️ Настройки": "settings",
+    "❓ Помощь": "help",
+    "🆘 Помощь": "help",
+}
+
+def _private_menu_action(text: str) -> Optional[str]:
+    """Return a navigation action for a persistent private-chat menu label."""
+    return _PRIVATE_MENU_ACTIONS.get((text or "").strip())
+
+
 # ==================== КЛАСС ИСКЛЮЧЕНИЙ ====================
 class RateLimitExceeded(Exception):
-    """Исключение при превышении лимитов запросов"""
+    """Исключение при превышении лимитов запросов."""
     pass
+
+
+class ProviderError(RuntimeError):
+    """Base error for provider-facing operations (reserved for future handlers)."""
+
+
+class ProviderSearchError(ProviderError):
+    """Provider search failed after its configured retry policy."""
+
+
+class ProviderDownloadError(ProviderError):
+    """Provider download failed after its configured retry/fallback policy."""
 
 # ==================== МОДЕЛИ ДАННЫХ ====================
 @dataclass
@@ -1860,6 +1905,17 @@ class AsyncLastFM:
             return artists
         return []
     
+    async def _handle_queued_download(self, job):
+        """Worker callback used by playlist/batch jobs."""
+        payload = dict(job.payload or {})
+        update = payload.get("update")
+        context = payload.get("context")
+        track = payload.get("track")
+        if update is None or context is None or not isinstance(track, dict):
+            raise RuntimeError("invalid queued download payload")
+        async with self.global_download_semaphore:
+            return await download_and_send_audio(update, context, update.effective_message, track, update.effective_message.message_id)
+
     async def clean_text(self, text: str) -> str:
         """Очистка текста (легковесная, не требует executor)"""
         if not text:
@@ -2663,6 +2719,18 @@ class AsyncMusicBot:
         self.vk_token_manager = AsyncVKTokenManager()
         self.yandex_music = YandexMusicManager()
         self.youtube_music = YoutubeMusicManager()
+        self.provider_health = ProviderHealth()
+        self.provider_router = ProviderRouter(
+            cooldown_seconds=getattr(config, "PROVIDER_COOLDOWN_SECONDS", 30),
+            failure_threshold=getattr(config, "PROVIDER_FAILURE_THRESHOLD", 2),
+        )
+        self.metrics = MetricsRegistry(getattr(config, "METRICS_HISTORY_SAMPLES", 5000))
+        self.playlist_manager = PlaylistManager(2)
+        self.download_queue = DownloadQueue(
+            worker_count=getattr(config, "DOWNLOAD_QUEUE_WORKERS", 3),
+            max_size=getattr(config, "DOWNLOAD_QUEUE_MAX_SIZE", 100),
+        )
+        self.global_download_semaphore = asyncio.Semaphore(max(1, int(getattr(config, "GLOBAL_DOWNLOAD_LIMIT", 12) or 12)))
 
         # User data (favorites/history/prefs)
         self.user_store: Optional[UserStore] = None
@@ -2886,6 +2954,7 @@ class AsyncMusicBot:
         except Exception:
             pass
         await self.cache.init_redis(config.REDIS_URL)
+        await self.download_queue.start(self._handle_queued_download)
 
         # Init user store (favorites/history/prefs) on the same DB file
         try:
@@ -3036,6 +3105,11 @@ class AsyncMusicBot:
                 if memory_percent is not None:
                     logger.info(f"  Memory usage: {memory_percent:.1f}%")
                 logger.info(f"  Background tasks: {len(self.background_tasks)}")
+                provider_lines = self.provider_health.format_lines()
+                if provider_lines:
+                    logger.info("Provider health:")
+                    for line in provider_lines:
+                        logger.info(line)
                 
             except Exception as e:
                 logger.error(f"Metrics collection error: {e}")
@@ -3160,29 +3234,8 @@ class AsyncMusicBot:
 
     @classmethod
     def rank_tracks_by_artist(cls, tracks: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
-        """Stable artist-first ranking with no quality filters or score thresholds.
-
-        Order:
-        1. exact performer match;
-        2. performer starts with the query;
-        3. query occurs in performer;
-        4. every other result in the source's original order.
-        """
-        artist_query = _norm_text(cls._artist_query(query))
-        if not artist_query:
-            return list(tracks or [])
-
-        def key(item: Dict[str, Any]) -> int:
-            artist = _norm_text((item or {}).get("artist", ""))
-            if artist == artist_query:
-                return 0
-            if artist.startswith(artist_query + " ") or artist.startswith(artist_query + ","):
-                return 1
-            if artist_query in artist:
-                return 2
-            return 3
-
-        return sorted(list(tracks or []), key=key)
+        """Production search ranking: relevance, artist/title match and deduplication."""
+        return _rank_tracks(tracks, query)
     
 
     
@@ -3280,8 +3333,26 @@ class AsyncMusicBot:
         if last_err:
             logger.debug(f"VK search exhausted retries for {query!r}: {last_err}")
         return []
-    async def search_all_sources(self, query: str, limit: int = 30) -> List[Dict[str, Any]]:
-        """Search enabled sources in parallel, merge them, then rank only by performer."""
+    async def _provider_call(self, provider: str, operation: str, awaitable):
+        """Execute provider operation with circuit-breaker routing and metrics."""
+        started = time.perf_counter()
+        try:
+            result = await self.provider_router.call(provider, operation, lambda: awaitable)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            count = len(result) if isinstance(result, (list, tuple, dict, set)) else 0
+            self.provider_health.record_success(provider, operation, elapsed_ms, count=count)
+            await self.metrics.record(f"provider.{provider}.{operation}", ok=True, seconds=elapsed_ms / 1000.0)
+            return result
+        except Exception as exc:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self.provider_health.record_failure(provider, operation, elapsed_ms, exc)
+            await self.metrics.record(f"provider.{provider}.{operation}", ok=False, seconds=elapsed_ms / 1000.0)
+            raise
+
+
+    async def search_all_sources(self, query: str, limit: int = 30, preferred_source: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search enabled sources in parallel, apply failover/circuit-breaker, then rank."""
+        started = time.perf_counter()
         requested = max(1, int(limit or 30))
         multiplier = max(1, int(getattr(config, "MERGE_LIMIT_MULTIPLIER", 2) or 2))
         fetch_limit = requested * multiplier
@@ -3296,15 +3367,16 @@ class AsyncMusicBot:
         if direct_youtube_url:
             # A pasted YouTube URL is an explicit provider choice; do not bury
             # the exact video behind unrelated VK/Yandex/YouTube search results.
-            tasks.append(("yt", asyncio.create_task(self.youtube_music.search_tracks(query, 1))))
+            tasks.append(("yt", asyncio.create_task(self._provider_call("youtube", "search", self.youtube_music.search_tracks(query, 1)))))
         else:
             if self.vk_enabled():
-                tasks.append(("vk", asyncio.create_task(self.search_vk_music(query, fetch_limit))))
+                tasks.append(("vk", asyncio.create_task(self._provider_call("vk", "search", self.search_vk_music(query, fetch_limit)))))
             if getattr(config, "ENABLE_YANDEX_MUSIC", True) and self.yandex_music._initialized:
-                tasks.append(("ym", asyncio.create_task(self._search_yandex_music_adapted(query, fetch_limit))))
+                tasks.append(("ym", asyncio.create_task(self._provider_call("yandex", "search", self._search_yandex_music_adapted(query, fetch_limit)))))
             if youtube_enabled:
-                tasks.append(("yt", asyncio.create_task(self.youtube_music.search_tracks(query, fetch_limit))))
+                tasks.append(("yt", asyncio.create_task(self._provider_call("youtube", "search", self.youtube_music.search_tracks(query, fetch_limit)))))
         if not tasks:
+            await self.metrics.record("search", ok=False, seconds=time.perf_counter() - started)
             return []
 
         gathered = await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
@@ -3315,7 +3387,7 @@ class AsyncMusicBot:
                 continue
             buckets[source] = result or []
 
-        source_priority = str(getattr(config, "SOURCE_PRIORITY", "vk_first") or "vk_first").lower()
+        source_priority = str(preferred_source or getattr(config, "SOURCE_PRIORITY", "vk_first") or "vk_first").lower()
         if source_priority in ("yandex_first", "ym"):
             source_order = ("ym", "vk", "yt")
         elif source_priority in ("youtube_first", "youtube", "yt"):
@@ -3340,7 +3412,9 @@ class AsyncMusicBot:
             seen.add(identity)
             unique.append(track)
 
-        return self.rank_tracks_by_artist(unique, query)[:requested]
+        result = self.rank_tracks_by_artist(unique, query)[:requested]
+        await self.metrics.record("search", ok=bool(result), seconds=time.perf_counter() - started)
+        return result
     async def _search_yandex_music_adapted(self, query: str, limit: int) -> List[Dict[str, Any]]:
         """Convert ordinary Yandex.Music search results to the bot's common schema."""
         try:
@@ -3379,7 +3453,16 @@ class AsyncMusicBot:
             self._query_cache[cache_key] = (ranked, time.time())
             return ranked
 
-        results = await self.search_all_sources(query, count)
+        preferred_source = None
+        try:
+            if self.user_store:
+                prefs = await self.user_store.get_preferences(user_id)
+                preferred_source = prefs.get("prefer_source") or None
+                if preferred_source == "auto":
+                    preferred_source = None
+        except Exception:
+            preferred_source = None
+        results = await self.search_all_sources(query, count, preferred_source=preferred_source)
         if results:
             await self.cache.set_cached_results(query, results)
             self._query_cache[cache_key] = (results, time.time())
@@ -3593,11 +3676,15 @@ class AsyncMusicBot:
         yt_fast_timeout = float(getattr(config, "DIGEST_YOUTUBE_DOWNLOAD_TIMEOUT", 45.0) or 45.0) if fast else None
 
         async def _download_vk(url: str) -> bytes:
-            return await self.safe_download_audio(
-                url,
-                user_id,
-                timeout_s=fast_timeout,
-                retries=fast_retries,
+            return await self._provider_call(
+                "vk",
+                "download",
+                self.safe_download_audio(
+                    url,
+                    user_id,
+                    timeout_s=fast_timeout,
+                    retries=fast_retries,
+                ),
             )
 
         async def _download_yt(track: Dict[str, Any]) -> bytes:
@@ -3605,11 +3692,8 @@ class AsyncMusicBot:
                 raise RuntimeError("YouTube источник недоступен")
             async with self.download_semaphore:
                 coro = self.youtube_music.download_track_bytes(track)
-                data, extension = (
-                    await asyncio.wait_for(coro, timeout=yt_fast_timeout)
-                    if fast and yt_fast_timeout is not None
-                    else await coro
-                )
+                operation = asyncio.wait_for(coro, timeout=yt_fast_timeout) if fast and yt_fast_timeout is not None else coro
+                data, extension = await self._provider_call("youtube", "download", operation)
             track_info['audio_ext'] = extension
             return data
 
@@ -3637,12 +3721,15 @@ class AsyncMusicBot:
             )
             async with self.download_semaphore:
                 if fast and ym_fast_timeout is not None:
-                    audio_data = await asyncio.wait_for(
-                        self.yandex_music.download_track_bytes(ym_track),
-                        timeout=ym_fast_timeout,
+                    audio_data = await self._provider_call(
+                        "yandex",
+                        "download",
+                        asyncio.wait_for(self.yandex_music.download_track_bytes(ym_track), timeout=ym_fast_timeout),
                     )
                 else:
-                    audio_data = await self.yandex_music.download_track_bytes(ym_track)
+                    audio_data = await self._provider_call(
+                        "yandex", "download", self.yandex_music.download_track_bytes(ym_track)
+                    )
             if audio_data:
                 track_info['audio_ext'] = 'mp3'
                 return audio_data
@@ -3653,7 +3740,9 @@ class AsyncMusicBot:
             os.close(fd)
             try:
                 async with self.download_semaphore:
-                    success = await self.yandex_music.download_track(ym_track, temp_file)
+                    success = await self._provider_call(
+                        "yandex", "download", self.yandex_music.download_track(ym_track, temp_file)
+                    )
                 if not success:
                     return None
                 async with aiofiles.open(temp_file, 'rb') as file_obj:
@@ -3774,6 +3863,17 @@ class AsyncMusicBot:
             except Exception as yt_exc:
                 logger.warning("YouTube fallback failed for %s: %s", query, yt_exc)
             raise
+
+    async def _handle_queued_download(self, job):
+        """Worker callback used by playlist/batch jobs."""
+        payload = dict(job.payload or {})
+        update = payload.get("update")
+        context = payload.get("context")
+        track = payload.get("track")
+        if update is None or context is None or not isinstance(track, dict):
+            raise RuntimeError("invalid queued download payload")
+        async with self.global_download_semaphore:
+            return await download_and_send_audio(update, context, update.effective_message, track, update.effective_message.message_id)
 
     async def clean_text(self, text: str) -> str:
         """Асинхронная очистка текста"""
@@ -4224,8 +4324,12 @@ async def observe_bot_chat_membership(update: Update, context: CallbackContext) 
         logger.exception("Bot chat membership handler failed")
 
 
-async def user_check(update: Update) -> bool:
-    """Асинхронная проверка пользователя"""
+async def user_check(update: Update, enforce_cooldown: bool = True) -> bool:
+    """Асинхронная проверка пользователя.
+
+    Navigation callbacks must not be blocked by the short anti-spam cooldown;
+    expensive actions have their own rate limits.
+    """
     user = None
     chat = None
     
@@ -4258,18 +4362,58 @@ async def user_check(update: Update) -> bool:
             logger.error(f"Error sending ban message: {e}")
         return False
 
-    if not await bot_instance.user_manager.check_cooldown(user.id):
+    if enforce_cooldown and not await bot_instance.user_manager.check_cooldown(user.id):
         logger.debug(f"Rate limit exceeded for user {user.id} in chat {chat.id}")
         try:
             if update.callback_query:
-                await safe_answer_callback(getattr(update, 'callback_query', None), "⏳ Слишком частые запросы. Подождите 2 секунды.", show_alert=True)
+                await safe_answer_callback(getattr(update, 'callback_query', None), "⏳ Слишком частые запросы. Подождите немного.", show_alert=True)
             else:
-                await update.message.reply_text("⏳ Слишком частые запросы. Подождите 2 секунды.")
+                await update.message.reply_text("⏳ Слишком частые запросы. Подождите немного.")
         except Exception as e:
             logger.error(f"Error sending rate limit message: {e}")
         return False
 
     return True
+
+def _favorite_deep_link_uid(track: Dict[str, Any]) -> Optional[str]:
+    """Return the exact stable track UID for Telegram callback_data.
+
+    This is no longer a deep-link payload. Callback data may contain ':' and
+    therefore can preserve provider-prefixed UIDs such as vk:..., yt:... and
+    ym:... exactly as they are stored in user_history.
+    """
+    try:
+        uid = str(_track_uid_from_any(track) or "").strip()
+        if not uid:
+            return None
+        uid = re.sub(r"[^A-Za-z0-9_:-]", "", uid)
+        return uid or None
+    except Exception:
+        return None
+
+
+async def _favorite_reply_markup(context: CallbackContext, track: Dict[str, Any]) -> Optional[InlineKeyboardMarkup]:
+    """Build a native Telegram callback button for a downloaded track.
+
+    Do not use a t.me deep-link here: Telegram Desktop can open the bot with
+    the deep-link text merely prefilled in the compose box instead of sending
+    /start to the bot. A callback query is delivered directly to this bot and
+    can therefore add the exact downloaded track immediately.
+    """
+    try:
+        uid = _favorite_deep_link_uid(track)
+        if not uid:
+            return None
+        # uid is a short, Telegram-safe stable track identifier. Keep the
+        # callback payload well below Telegram's 64-byte callback_data limit.
+        callback_data = f"fav_audio:{uid}"
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("❤️ Добавить в избранное", callback_data=callback_data),
+        ]])
+    except Exception:
+        logger.debug("Failed to build favorite callback", exc_info=True)
+        return None
+
 
 async def download_and_send_audio(update: Update, context: CallbackContext, message, track: Dict, original_message_id: int = None) -> bool:
     """Download and send a track; return whether Telegram delivery succeeded."""
@@ -4299,6 +4443,9 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
                 'caption': getattr(config, 'TRACK_CREDIT_CAPTION', None),
                 'parse_mode': 'HTML'
             }
+            favorite_markup = await _favorite_reply_markup(context, track)
+            if favorite_markup is not None:
+                send_kwargs_fast['reply_markup'] = favorite_markup
 
             if message.chat.type in ["group", "supergroup"] and original_message_id:
                 send_kwargs_fast['reply_to_message_id'] = original_message_id
@@ -4332,6 +4479,7 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
                         uid = _track_uid_from_any(track)
                         await bot_instance.user_store.add_history(user_id, uid, track)
                         await bot_instance.user_store.set_last(user_id, uid, track)
+                        await bot_instance.user_store.set_pending_favorite(user_id, uid, track)
                 except Exception:
                     logger.debug("history update failed", exc_info=True)
                 return True
@@ -4367,6 +4515,7 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
                                 uid = _track_uid_from_any(track)
                                 await bot_instance.user_store.add_history(user_id, uid, track)
                                 await bot_instance.user_store.set_last(user_id, uid, track)
+                                await bot_instance.user_store.set_pending_favorite(user_id, uid, track)
                         except Exception:
                             logger.debug("history update failed", exc_info=True)
                         return True
@@ -4448,6 +4597,9 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
             'caption': getattr(config, 'TRACK_CREDIT_CAPTION', None),
             'parse_mode': 'HTML'
         }
+        favorite_markup = await _favorite_reply_markup(context, track)
+        if favorite_markup is not None:
+            send_kwargs['reply_markup'] = favorite_markup
         
         if message.chat.type in ["group", "supergroup"] and original_message_id:
             send_kwargs['reply_to_message_id'] = original_message_id
@@ -4494,6 +4646,7 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
                 uid = _track_uid_from_any(track)
                 await bot_instance.user_store.add_history(user_id, uid, track)
                 await bot_instance.user_store.set_last(user_id, uid, track)
+                await bot_instance.user_store.set_pending_favorite(user_id, uid, track)
         except Exception:
             logger.debug("history update failed", exc_info=True)
 
@@ -4650,9 +4803,10 @@ async def process_search(update: Update, context: CallbackContext, query: str) -
                 label = f"{_track_duration_text(track)} {icon} {track.get('artist') or 'Неизвестный исполнитель'} — {track.get('title') or 'Неизвестный трек'}"
                 if len(label) > max_len:
                     label = label[:max_len - 1].rstrip() + "…"
-                rows.append([InlineKeyboardButton(label, callback_data=f"dl:{session_id}:{_track_uid_from_any(track) or index}")])
+                uid = _track_uid_from_any(track) or str(index)
+                rows.append([InlineKeyboardButton(label, callback_data=f"dl:{session_id}:{uid}")])
 
-            rows.append([InlineKeyboardButton("👥 Найти похожих исполнителей", callback_data=f"similar_search:{session_id}")])
+            rows.append([InlineKeyboardButton("👥 Похожие", callback_data=f"similar_search:{session_id}")])
             if len(best_tracks) > len(top_tracks):
                 rows.append([InlineKeyboardButton("➕ Показать ещё", callback_data=f"more:{session_id}")])
             rows.append([InlineKeyboardButton("❌ Закрыть список", callback_data="close_search")])
@@ -4715,10 +4869,10 @@ async def show_songs_page(update: Update, context: CallbackContext, message, use
     sources_info = ("\n" + " | ".join(source_parts)) if source_parts else ""
 
     results_text = (
-        f"✅ <b>Найдено:</b> {len(all_songs)} (страница {page + 1}/{total_pages})"
-        f"{sources_info}\n"
-        f"<b>Запрос:</b> <i>{_esc(query)}</i>\n\n"
-        "Выберите трек кнопкой ниже:"
+        f"🎵 <b>{_esc(query)}</b>\n"
+        f"Найдено <b>{len(all_songs)}</b> · страница <b>{page + 1}/{total_pages}</b>"
+        f"{sources_info}\n\n"
+        "Нажмите на трек для скачивания. После скачивания появится кнопка «Добавить в избранное»."
     )
 
     def _truncate_btn(text: str, max_len: int) -> str:
@@ -4742,13 +4896,15 @@ async def show_songs_page(update: Update, context: CallbackContext, message, use
         global_idx = i - 1
         uid = _track_uid_from_any(song) or str(global_idx)
         source_icon = _source_icon(song.get('source'))
-        artist_raw = (song.get("artist") or "Неизвестный исполнитель")
-        title_raw = (song.get("title") or "Неизвестный трек")
+        artist_raw = (song.get("artist") or "Неизвестный исполнитель").strip()
+        title_raw = (song.get("title") or "Неизвестный трек").strip()
         src = (song.get('source') or 'vk')
         badge = _source_badge(src)
         k = bot_instance._tg_query_key(artist_raw, title_raw, song.get('vk_key'))
-        speed = '⚡ ' if k in local_fileid_keys else ''
-        label = _truncate_btn(f"{_track_duration_text(song)} {speed}[{badge}] {source_icon} {artist_raw} — {title_raw}", btn_max)
+        speed = '⚡' if k in local_fileid_keys else ''
+        prefix = f"{i:02d} · {_track_duration_text(song)}"
+        badges = f" {speed}" if speed else ""
+        label = _truncate_btn(f"{prefix}{badges} · {source_icon} {artist_raw} — {title_raw}", btn_max)
         dl_btn = InlineKeyboardButton(label, callback_data=f"dl:{session_id}:{uid}")
         keyboard_rows.append([dl_btn])
 
@@ -4761,26 +4917,17 @@ async def show_songs_page(update: Update, context: CallbackContext, message, use
     if pagination_buttons:
         keyboard_rows.append(pagination_buttons)
 
-    # ⭐ Лучший (1 клик) — скачивает топ-1 с fileID-first
+    # Primary actions: keep the most useful actions together instead of stacking wide buttons.
     if len(all_songs or []) > 0:
-        keyboard_rows.append([InlineKeyboardButton("⬇️ Скачать первый", callback_data=f"dlbest:{session_id}")])
+        actions = [InlineKeyboardButton("⬇️ Первый", callback_data=f"dlbest:{session_id}")]
+        if getattr(message, "chat", None) and getattr(message.chat, "type", None) == "private":
+            actions.append(InlineKeyboardButton(f"⬇️ Все · {len(all_songs)}", callback_data=f"dlall:{session_id}"))
+        keyboard_rows.append(actions)
 
-    # 👥 В личке тоже добавим кнопку «Похожие» прямо под выдачей
-    # В личке — кнопка "Скачать все" (скачать все найденные результаты)
-    if getattr(message, "chat", None) and getattr(message.chat, "type", None) == "private":
-        total_found = len(all_songs or [])
-        if total_found > 0:
-            keyboard_rows.append([
-                InlineKeyboardButton(
-                    f"⬇️ Скачать все ({total_found})",
-                    callback_data=f"dlall:{session_id}"
-                )
-            ])
-
-    # 👥 В момент выдачи — кнопка поиска похожих исполнителей (по текущей сессии)
-    keyboard_rows.append([InlineKeyboardButton("👥 Найти похожих исполнителей", callback_data=f"similar_search:{session_id}")])
-
-    keyboard_rows.append([InlineKeyboardButton("❌ Закрыть список", callback_data="close_search")])
+    keyboard_rows.append([
+        InlineKeyboardButton("👥 Похожие", callback_data=f"similar_search:{session_id}"),
+        InlineKeyboardButton("✕ Закрыть", callback_data="close_search"),
+    ])
 
     await safe_edit_text(
         message,
@@ -5418,9 +5565,11 @@ async def handle_similar_artists_input(update: Update, context: CallbackContext)
         similar_artists = await bot_instance.get_similar_artists(artist_name)
         
         if not similar_artists:
+            await bot_instance.clear_user_state(update.effective_user.id)
             await update.message.reply_text(
-                f"❌ <b>Не удалось найти похожих исполнителей для:</b>\n<i>{artist_name}</i>",
-                parse_mode='HTML'
+                f"❌ <b>Не удалось найти похожих исполнителей для:</b>\n<i>{_esc(artist_name)}</i>\n\nМожно снова выбрать действие в меню ниже.",
+                parse_mode='HTML',
+                reply_markup=private_main_keyboard(),
             )
             return
         
@@ -5435,6 +5584,7 @@ async def handle_similar_artists_input(update: Update, context: CallbackContext)
         ]
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="similar_menu")])
         
+        await bot_instance.clear_user_state(update.effective_user.id)
         await update.message.reply_text(
             text=message_text,
             parse_mode='HTML',
@@ -5444,9 +5594,11 @@ async def handle_similar_artists_input(update: Update, context: CallbackContext)
         
     except Exception as e:
         logger.error(f"Error getting similar artists: {e}")
+        await bot_instance.clear_user_state(update.effective_user.id)
         await update.message.reply_text(
             "❌ <b>Ошибка при поиске похожих исполнителей</b>\n\nПопробуйте позже.",
-            parse_mode='HTML'
+            parse_mode='HTML',
+            reply_markup=private_main_keyboard(),
         )
 
 async def show_help_menu(update: Update, context: CallbackContext):
@@ -5541,7 +5693,7 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
         await safe_answer_callback(query, "❌ Ошибка пользователя", show_alert=True)
         return
     
-    if not await user_check(update):
+    if not await user_check(update, enforce_cooldown=False):
         return
 
     # Регистрируем чат/пользователя (для статистики/экспорта/рассылки)
@@ -5581,6 +5733,29 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
             if not _is_admin(query.from_user.id):
                 await safe_answer_callback(query, "⛔️ Доступ только для админов", show_alert=True)
                 return
+
+        if callback_data.startswith("user_settings:"):
+            if not await user_check(update):
+                return
+            parts = callback_data.split(":")
+            try:
+                if parts[1] == "source":
+                    await bot_instance.user_store.set_preferences(query.from_user.id, prefer_source=parts[2])
+                elif parts[1] == "bitrate":
+                    await bot_instance.user_store.set_preferences(query.from_user.id, prefer_bitrate_kbps=int(parts[2]))
+                await safe_answer_callback(query, "Настройки сохранены")
+                prefs = await bot_instance.user_store.get_preferences(query.from_user.id)
+                await safe_edit_message_text(
+                    query,
+                    "⚙️ <b>Настройки сохранены</b>\n\n"
+                    f"Источник: <b>{_esc(str(prefs.get('prefer_source') or 'auto'))}</b>\n"
+                    f"Качество: <b>{int(prefs.get('prefer_bitrate_kbps') or 192)} kbps</b>",
+                    parse_mode="HTML",
+                )
+            except Exception as exc:
+                await safe_answer_callback(query, "Не удалось сохранить", show_alert=True)
+                logger.warning("User settings update failed: %s", exc)
+            return
 
         # --- Admin panel callbacks (admins only) ---
         if callback_data == "admin_menu":
@@ -5725,6 +5900,38 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
             await handle_delete_token_callback(update, context, idx)
             return
         
+        if callback_data.startswith("pldl:") or callback_data.startswith("plall:"):
+            parts = callback_data.split(":")
+            sid = parts[1] if len(parts) > 1 else ""
+            sess = await bot_instance.session_manager.get_session(sid)
+            if not sess or sess.user_id != query.from_user.id:
+                await safe_answer_callback(query, "Список устарел", show_alert=True)
+                return
+            if callback_data.startswith("pldl:") and len(parts) >= 3:
+                tr = sess.get_track(parts[2], query.message.chat.type if query.message else None)
+                if not tr:
+                    await safe_answer_callback(query, "Трек не найден", show_alert=True)
+                    return
+                await safe_answer_callback(query, "Добавлено в очередь")
+                try:
+                    job = await bot_instance.download_queue.submit(query.from_user.id, {"update": update, "context": context, "track": tr}, priority=50)
+                    await safe_edit_message_text(query, f"⬇️ Трек добавлен в очередь. ID: <code>{job.job_id[:8]}</code>", parse_mode="HTML")
+                except Exception as exc:
+                    await safe_answer_callback(query, "Очередь переполнена", show_alert=True)
+                    logger.warning("Playlist queue submit failed: %s", exc)
+                return
+            if callback_data.startswith("plall:"):
+                await safe_answer_callback(query, "Playlist добавлен в очередь")
+                submitted = 0
+                for tr in sess.results[:int(getattr(config, "MAX_PLAYLIST_TRACKS", 100))]:
+                    try:
+                        await bot_instance.download_queue.submit(query.from_user.id, {"update": update, "context": context, "track": tr}, priority=80)
+                        submitted += 1
+                    except Exception:
+                        break
+                await safe_edit_message_text(query, f"📥 В очередь добавлено: <b>{submitted}</b> треков", parse_mode="HTML")
+                return
+
         # No-op кнопки (индикатор страницы и т.п.)
         if callback_data in ("current_page", "noop"):
             await safe_answer_callback(query)
@@ -5757,6 +5964,97 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
                 except Exception:
                     pass
             await safe_answer_callback(query, "⏹️ Останавливаю...", show_alert=False)
+
+        elif callback_data.startswith('fav_audio:') and hasattr(bot_instance, 'user_store'):
+            uid = callback_data.split(':', 1)[1].strip() if ':' in callback_data else ""
+            if not uid:
+                await safe_answer_callback(query, "❌ Не удалось определить трек", show_alert=True)
+                return
+            track = await bot_instance.user_store.get_history_track(query.from_user.id, uid)
+            if not track:
+                await safe_answer_callback(query, "❌ Трек не найден в истории", show_alert=True)
+                return
+            if await bot_instance.user_store.is_favorite(query.from_user.id, uid):
+                await safe_answer_callback(query, "❤️ Трек уже в избранном", show_alert=False)
+                try:
+                    await query.message.edit_reply_markup(
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("💔 Убрать из избранного", callback_data=f"fav_audio_remove:{uid}"),
+                        ]])
+                    )
+                except Exception:
+                    pass
+                return
+            await bot_instance.user_store.add_favorite(query.from_user.id, uid, track)
+            await safe_answer_callback(query, "❤️ Добавлено в избранное", show_alert=False)
+            try:
+                await query.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("💔 Убрать из избранного", callback_data=f"fav_audio_remove:{uid}"),
+                    ]])
+                )
+            except Exception:
+                pass
+
+        elif callback_data.startswith('fav_audio_remove:') and hasattr(bot_instance, 'user_store'):
+            uid = callback_data.split(':', 1)[1].strip() if ':' in callback_data else ""
+            if not uid:
+                await safe_answer_callback(query, "❌ Не удалось определить трек", show_alert=True)
+                return
+            await bot_instance.user_store.remove_favorite(query.from_user.id, uid)
+            await safe_answer_callback(query, "💔 Убрано из избранного", show_alert=False)
+            try:
+                await query.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("❤️ Добавить в избранное", callback_data=f"fav_audio:{uid}"),
+                    ]])
+                )
+            except Exception:
+                pass
+
+        elif callback_data.startswith('favtoggle:') and hasattr(bot_instance, 'user_store'):
+            parts = callback_data.split(':', 2)
+            if len(parts) != 3:
+                await safe_answer_callback(query, "❌ Ошибка в данных избранного", show_alert=True)
+                return
+            session_id, track_ref = parts[1], parts[2]
+            session = await bot_instance.session_manager.get_session(session_id)
+            if not session:
+                await safe_answer_callback(query, "❌ Результаты поиска устарели. Выполните поиск заново.", show_alert=True)
+                return
+            chat_type = getattr(getattr(query, 'message', None), 'chat', None)
+            chat_type = getattr(chat_type, 'type', None)
+            track = session.get_track(str(track_ref), chat_type=chat_type) if hasattr(session, 'get_track') else None
+            if not track:
+                await safe_answer_callback(query, "❌ Трек недоступен. Выполните поиск заново.", show_alert=True)
+                return
+            uid = _track_uid_from_any(track)
+            if not uid:
+                await safe_answer_callback(query, "❌ Не удалось определить трек", show_alert=True)
+                return
+            if await bot_instance.user_store.is_favorite(query.from_user.id, uid):
+                await bot_instance.user_store.remove_favorite(query.from_user.id, uid)
+                await safe_answer_callback(query, "💔 Убрано из избранного", show_alert=False)
+            else:
+                await bot_instance.user_store.add_favorite(query.from_user.id, uid, track)
+                await safe_answer_callback(query, "❤️ Добавлено в избранное", show_alert=False)
+
+        elif callback_data.startswith('favdl:') and hasattr(bot_instance, 'user_store'):
+            uid = callback_data.split(':', 1)[1] if ':' in callback_data else ""
+            tr = await bot_instance.user_store.get_favorite(query.from_user.id, uid)
+            if not tr:
+                await safe_answer_callback(query, "❌ Трек не найден в избранном", show_alert=True)
+            else:
+                await handle_direct_user_track_download(update, context, query, tr)
+
+        elif callback_data.startswith('favrm:') and hasattr(bot_instance, 'user_store'):
+            uid = callback_data.split(':', 1)[1] if ':' in callback_data else ""
+            await bot_instance.user_store.remove_favorite(query.from_user.id, uid)
+            await safe_answer_callback(query, "💔 Убрано из избранного", show_alert=True)
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
         elif callback_data.startswith('histdl:') and hasattr(bot_instance, 'user_store'):
             uid = callback_data.split(':', 1)[1] if ':' in callback_data else ""
@@ -7289,6 +7587,30 @@ class UserStore:
                     ts REAL
                 )
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_favorites (
+                    user_id INTEGER NOT NULL,
+                    uid TEXT NOT NULL,
+                    track_json TEXT NOT NULL,
+                    ts REAL NOT NULL,
+                    PRIMARY KEY(user_id, uid)
+                )
+            """)
+            # Fallback for Telegram clients that open the bot from a t.me
+            # deep-link but deliver only plain /start without the payload.
+            # The pending item is short-lived and contains no secret data.
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_pending_favorite (
+                    user_id INTEGER PRIMARY KEY,
+                    uid TEXT NOT NULL,
+                    track_json TEXT NOT NULL,
+                    ts REAL NOT NULL
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_user_favorites_user_ts "
+                "ON user_favorites(user_id, ts DESC)"
+            )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_history_user_ts "
                 "ON user_history(user_id, ts DESC)"
@@ -7394,6 +7716,104 @@ class UserStore:
             cur = await conn.execute(
                 "SELECT track_json FROM user_history WHERE user_id=? AND uid=? ORDER BY ts DESC LIMIT 1",
                 (int(user_id), str(uid))
+            )
+            row = await cur.fetchone()
+            await cur.close()
+        return self._load_track(row[0]) if row else None
+
+    async def add_favorite(self, user_id: int, uid: str, track: Any) -> None:
+        await self.init()
+        uid = str(uid or _track_uid_from_any(track) or "")
+        if not uid:
+            return
+        async with _sqlite_connection(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_favorites(user_id, uid, track_json, ts) VALUES(?,?,?,?)
+                ON CONFLICT(user_id, uid) DO UPDATE SET track_json=excluded.track_json, ts=excluded.ts
+                """,
+                (int(user_id), uid, self._dump_track(track), time.time()),
+            )
+            await conn.commit()
+
+    async def set_pending_favorite(self, user_id: int, uid: str, track: Any) -> None:
+        """Remember a recent download for the t.me favorite-link fallback."""
+        await self.init()
+        uid = str(uid or _track_uid_from_any(track) or "")
+        if not uid:
+            return
+        async with _sqlite_connection(self.db_path) as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_pending_favorite(user_id, uid, track_json, ts)
+                VALUES(?,?,?,?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    uid=excluded.uid, track_json=excluded.track_json, ts=excluded.ts
+                """,
+                (int(user_id), uid, self._dump_track(track), time.time()),
+            )
+            await conn.commit()
+
+    async def get_pending_favorite(self, user_id: int, max_age_seconds: int = 300) -> Optional[Dict[str, Any]]:
+        """Consume a recent pending favorite created by a successful download."""
+        await self.init()
+        now = time.time()
+        async with _sqlite_connection(self.db_path) as conn:
+            cur = await conn.execute(
+                "SELECT uid, track_json, ts FROM user_pending_favorite WHERE user_id=? LIMIT 1",
+                (int(user_id),),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+            await conn.execute("DELETE FROM user_pending_favorite WHERE user_id=?", (int(user_id),))
+            await conn.commit()
+        if not row or (now - float(row[2] or 0)) > max(1, int(max_age_seconds)):
+            return None
+        track = self._load_track(row[1])
+        if track:
+            track['uid'] = str(row[0])
+        return track or None
+
+    async def clear_pending_favorite(self, user_id: int) -> None:
+        await self.init()
+        async with _sqlite_connection(self.db_path) as conn:
+            await conn.execute("DELETE FROM user_pending_favorite WHERE user_id=?", (int(user_id),))
+            await conn.commit()
+
+    async def remove_favorite(self, user_id: int, uid: str) -> None:
+        await self.init()
+        async with _sqlite_connection(self.db_path) as conn:
+            await conn.execute("DELETE FROM user_favorites WHERE user_id=? AND uid=?", (int(user_id), str(uid)))
+            await conn.commit()
+
+    async def is_favorite(self, user_id: int, uid: str) -> bool:
+        await self.init()
+        async with _sqlite_connection(self.db_path) as conn:
+            cur = await conn.execute(
+                "SELECT 1 FROM user_favorites WHERE user_id=? AND uid=? LIMIT 1",
+                (int(user_id), str(uid)),
+            )
+            row = await cur.fetchone()
+            await cur.close()
+        return bool(row)
+
+    async def list_favorites(self, user_id: int, limit: int = 30) -> List[Dict[str, Any]]:
+        await self.init()
+        async with _sqlite_connection(self.db_path) as conn:
+            cur = await conn.execute(
+                "SELECT track_json FROM user_favorites WHERE user_id=? ORDER BY ts DESC LIMIT ?",
+                (int(user_id), int(limit)),
+            )
+            rows = await cur.fetchall()
+            await cur.close()
+        return [self._load_track(r[0]) for r in (rows or [])]
+
+    async def get_favorite(self, user_id: int, uid: str) -> Optional[Dict[str, Any]]:
+        await self.init()
+        async with _sqlite_connection(self.db_path) as conn:
+            cur = await conn.execute(
+                "SELECT track_json FROM user_favorites WHERE user_id=? AND uid=? LIMIT 1",
+                (int(user_id), str(uid)),
             )
             row = await cur.fetchone()
             await cur.close()
@@ -7824,6 +8244,22 @@ async def _show_admin_monitor(query):
                 f"• redis hits/misses: <b>{cache_stats.get('redis_hits',0)}</b>/<b>{cache_stats.get('redis_misses',0)}</b>\n"
                 f"• hit-rate: <b>{cache_stats.get('hit_rate',0):.1%}</b>, redis hit-rate: <b>{cache_stats.get('redis_hit_rate',0):.1%}</b>\n"
             )
+
+        try:
+            m = await bot_instance.metrics.snapshot()
+            queue_state = bot_instance.download_queue.snapshot()
+            text_msg += (
+                "\n<b>Метрики:</b>\n"
+                f"• requests/search: <b>{m['counters'].get('search.total', 0)}</b>\n"
+                f"• downloads: <b>{m['counters'].get('download.total', 0)}</b>\n"
+                f"• download errors: <b>{m['counters'].get('download.errors', 0)}</b>\n"
+                f"• queue: <b>{queue_state.get('queued', 0)}</b> / workers: <b>{queue_state.get('workers', 0)}</b>\n"
+            )
+            search_lat = m.get('latency', {}).get('search', {})
+            if search_lat:
+                text_msg += f"• search P95: <b>{search_lat.get('p95', 0):.2f}s</b>\n"
+        except Exception:
+            pass
 
         text_msg += (
             "\n<b>Сервисы:</b>\n"
@@ -9804,6 +10240,54 @@ async def start(update: Update, context: CallbackContext) -> None:
 
     user = update.effective_user
 
+    # Deep link from a downloaded audio: /start fav_<track_uid>.
+    # The track is resolved from the user's download history, so no track metadata
+    # or secrets are exposed in the URL.
+    start_payload = ""
+    try:
+        if getattr(context, "args", None):
+            start_payload = str(context.args[0] or "").strip()
+    except Exception:
+        start_payload = ""
+
+    # Preferred path: Telegram supplies the deep-link payload.
+    # Fallback path: some Telegram desktop/client flows open the bot and emit
+    # plain /start without preserving the payload. Consume the short-lived
+    # pending favorite created when this user received the downloaded audio.
+    pending_track = None
+    if getattr(bot_instance, "user_store", None):
+        if start_payload.startswith(("fav_", "unfav_")):
+            uid = start_payload[4:].strip()
+            if uid:
+                if not uid.startswith("h:"):
+                    uid = "h:" + uid
+                pending_track = await bot_instance.user_store.get_history_track(user.id, uid)
+                # A payload was received successfully, so discard any fallback
+                # record for the same user to avoid a later accidental /start.
+                if pending_track:
+                    await bot_instance.user_store.clear_pending_favorite(user.id)
+        elif not start_payload:
+            pending_track = await bot_instance.user_store.get_pending_favorite(user.id, max_age_seconds=300)
+
+    if pending_track and getattr(bot_instance, "user_store", None):
+        uid = _track_uid_from_any(pending_track)
+        if uid:
+            is_unfavorite = start_payload.startswith("unfav_")
+            is_favorite = await bot_instance.user_store.is_favorite(user.id, uid)
+            if is_unfavorite:
+                if is_favorite:
+                    await bot_instance.user_store.remove_favorite(user.id, uid)
+                text = "💔 <b>Убрано из избранного</b>\n\n" + _esc(f"{pending_track.get('artist','')} — {pending_track.get('title','')}")
+            else:
+                if not is_favorite:
+                    await bot_instance.user_store.add_favorite(user.id, uid, pending_track)
+                    text = "❤️ <b>Добавлено в избранное</b>\n\n" + _esc(f"{pending_track.get('artist','')} — {pending_track.get('title','')}")
+                else:
+                    text = "❤️ <b>Трек уже в избранном</b>\n\n" + _esc(f"{pending_track.get('artist','')} — {pending_track.get('title','')}")
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=private_main_keyboard())
+            return
+
+
     # Регистрируем чат/пользователя (для статистики/экспорта/рассылки)
     try:
         if hasattr(bot_instance, "admin_db") and bot_instance.admin_db:
@@ -9925,7 +10409,10 @@ async def help_command(update: Update, context: CallbackContext) -> None:
 <b>Команды:</b>
 /search [запрос] — поиск музыки
 /history — история загрузок
+/favorites — избранные треки
+/favorite — добавить/убрать последний трек из избранного
 /repeat — повторить последний трек
+/settings — настройки источника и качества
 /mix — произвольная подборка с выбором жанра
 /digest — настроить подборки в группе (для администраторов)
 /help — эта справка
@@ -9939,6 +10426,67 @@ async def help_command(update: Update, context: CallbackContext) -> None:
 """
     await update.effective_message.reply_text(help_text, parse_mode="HTML")
 
+
+
+async def playlist_command(update: Update, context: CallbackContext) -> None:
+    """Extract a YouTube playlist/album URL and expose batch download actions."""
+    if not await user_check(update):
+        return
+    url = " ".join(context.args).strip()
+    if not url:
+        await user_mix_command(update, context)
+        return
+    if not getattr(bot_instance, "playlist_manager", None):
+        await update.effective_message.reply_text("📚 Модуль playlist временно недоступен.")
+        return
+    try:
+        rows = await bot_instance.playlist_manager.extract(url, getattr(config, "MAX_PLAYLIST_TRACKS", 100))
+    except Exception as exc:
+        logger.warning("Playlist extraction failed: %s", exc)
+        await update.effective_message.reply_text("❌ Не удалось прочитать playlist/album. Проверьте ссылку и доступность списка.")
+        return
+    if not rows:
+        await update.effective_message.reply_text("❌ В playlist/album не найдено доступных треков.")
+        return
+    sid = await bot_instance.session_manager.create_session(update.effective_user.id, url, rows)
+    sess = await bot_instance.session_manager.get_session(sid)
+    if sess:
+        sess.chat_id = update.effective_chat.id
+        sess.original_message_id = update.effective_message.message_id
+        sess.search_message_id = update.effective_message.message_id
+    lines = [f"📚 <b>Playlist / Album</b>\n", f"Треков: <b>{len(rows)}</b>\n"]
+    for i, tr in enumerate(rows[:20], 1):
+        lines.append(f"{i}. {_esc(tr.get('artist',''))} — {_esc(tr.get('title',''))}")
+    if len(rows) > 20:
+        lines.append(f"… ещё {len(rows)-20}")
+    kb = [
+        [InlineKeyboardButton(f"⬇️ Скачать всё ({len(rows)})", callback_data=f"plall:{sid}")],
+    ]
+    for i, tr in enumerate(rows[:15]):
+        uid = _track_uid_from_any(tr)
+        kb.append([InlineKeyboardButton(f"{i+1}. {_source_badge('yt')} {str(tr.get('artist',''))[:18]} — {str(tr.get('title',''))[:22]}", callback_data=f"pldl:{sid}:{uid}")])
+    await update.effective_message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb), disable_web_page_preview=True)
+
+
+async def settings_command(update: Update, context: CallbackContext) -> None:
+    """User preferences for provider and bitrate."""
+    if not await user_check(update):
+        return
+    prefs = await bot_instance.user_store.get_preferences(update.effective_user.id) if bot_instance.user_store else {}
+    source = prefs.get("prefer_source") or "auto"
+    bitrate = prefs.get("prefer_bitrate_kbps") or getattr(config, "YM_PREFERRED_MAX_BITRATE_KBPS", 192)
+    text = (
+        "⚙️ <b>Настройки</b>\n\n"
+        f"🎵 Источник: <b>{_esc(str(source))}</b>\n"
+        f"🎚 Качество: <b>{int(bitrate)} kbps</b>\n\n"
+        "Настройки применяются к новым поискам и загрузкам."
+    )
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎵 Авто", callback_data="user_settings:source:auto"), InlineKeyboardButton("🎶 VK", callback_data="user_settings:source:vk")],
+        [InlineKeyboardButton("🎧 Yandex", callback_data="user_settings:source:ym"), InlineKeyboardButton("▶️ YouTube", callback_data="user_settings:source:yt")],
+        [InlineKeyboardButton("128 kbps", callback_data="user_settings:bitrate:128"), InlineKeyboardButton("192 kbps", callback_data="user_settings:bitrate:192"), InlineKeyboardButton("320 kbps", callback_data="user_settings:bitrate:320")],
+    ])
+    await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def history_command(update: Update, context: CallbackContext) -> None:
@@ -9965,6 +10513,66 @@ async def history_command(update: Update, context: CallbackContext) -> None:
         label = _t(f"{_track_duration_text(tr)} ⬇️ [{badge}] {tr.get('artist','')} — {tr.get('title','')}")
         rows.append([InlineKeyboardButton(label, callback_data=f"histdl:{uid}")])
     await update.message.reply_text("🕘 <b>История</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(rows))
+
+
+async def favorites_command(update: Update, context: CallbackContext) -> None:
+    """Показать избранные треки пользователя."""
+    if not await user_check(update):
+        return
+    user_id = update.effective_user.id
+    if not getattr(bot_instance, 'user_store', None):
+        await update.message.reply_text("❌ Избранное недоступно")
+        return
+    favorites = await bot_instance.user_store.list_favorites(
+        user_id, limit=int(getattr(config, 'HISTORY_LIMIT', 20) or 20)
+    )
+    if not favorites:
+        await update.message.reply_text(
+            "❤️ <b>Избранное пока пустое.</b>\n\n"
+            "• Нажмите ❤️ рядом с найденным треком — это самый простой способ добавить его.\n"
+            "• Или после скачивания используйте /favorite, чтобы добавить последний трек.",
+            parse_mode="HTML",
+            reply_markup=private_main_keyboard(),
+        )
+        return
+    rows = []
+    btn_max = int(getattr(config, "BUTTON_TEXT_MAX_LENGTH", 48) or 48)
+    for tr in favorites[:15]:
+        uid = _track_uid_from_any(tr) or tr.get('uid')
+        label = f"❤️ {_source_badge(tr.get('source') or 'vk')} {tr.get('artist','')} — {tr.get('title','')}"
+        if len(label) > btn_max:
+            label = label[:btn_max - 1] + "…"
+        rows.append([
+            InlineKeyboardButton(label, callback_data=f"favdl:{uid}"),
+            InlineKeyboardButton("✕", callback_data=f"favrm:{uid}"),
+        ])
+    await update.message.reply_text(
+        "❤️ <b>Избранное</b>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(rows)
+    )
+
+
+async def favorite_last_command(update: Update, context: CallbackContext) -> None:
+    """Toggle the last downloaded track in favorites."""
+    if not await user_check(update):
+        return
+    user_id = update.effective_user.id
+    if not getattr(bot_instance, 'user_store', None):
+        await update.message.reply_text("❌ Избранное недоступно")
+        return
+    last = await bot_instance.user_store.get_last(user_id)
+    if not last:
+        await update.message.reply_text("❤️ Сначала скачайте трек, который хотите добавить в избранное.")
+        return
+    uid = _track_uid_from_any(last)
+    if not uid:
+        await update.message.reply_text("❌ Не удалось определить трек.")
+        return
+    if await bot_instance.user_store.is_favorite(user_id, uid):
+        await bot_instance.user_store.remove_favorite(user_id, uid)
+        await update.message.reply_text("💔 Убрано из избранного.")
+    else:
+        await bot_instance.user_store.add_favorite(user_id, uid, last)
+        await update.message.reply_text(f"❤️ Добавлено: <b>{last.get('artist','')} — {last.get('title','')}</b>", parse_mode='HTML')
 
 
 async def repeat_last_command(update: Update, context: CallbackContext) -> None:
@@ -10517,36 +11125,30 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
     if message_text.startswith("/"):
         return
 
-    state = await bot_instance.get_user_state(user_id)
-    if state and state.get("state") == "similar_artists":
-        if chat_type == "private":
-            await handle_similar_artists_input(update, context)
-            return
-        await bot_instance.clear_user_state(user_id)
-
-    # A reply to any bot message is treated as a search, including inside forum topics.
-    replied = message.reply_to_message
-    if replied and replied.from_user and replied.from_user.id == context.bot.id:
-        if await user_check(update):
-            await process_search(update, context, message_text)
-        return
-
+    # Persistent private-menu buttons always win over transient input states.
+    # This prevents the "similar_artists" state from treating "История",
+    # "Чарты", "Настройки", etc. as artist names.
     if chat_type == "private":
-        if not await user_check(update):
+        menu_action = _private_menu_action(message_text)
+        if menu_action:
+            # Navigation is intentionally exempt from the short anti-spam cooldown.
+            if not await user_check(update, enforce_cooldown=False):
+                return
+        elif not await user_check(update):
             return
 
-        if message_text in ("🔎 Поиск", "🔍 Поиск", "🔍 Поиск музыки"):
+        if menu_action == "search":
             await bot_instance.clear_user_state(user_id)
             await message.reply_text(
                 "🔍 <b>Введите название трека или исполнителя:</b>",
                 parse_mode="HTML", reply_markup=private_main_keyboard(),
             )
             return
-        if message_text in ("🎲 Подборка", "🎲 Подборка по жанру"):
+        if menu_action == "mix":
             await bot_instance.clear_user_state(user_id)
             await _open_user_mix(update, context, check_access=False)
             return
-        if message_text in ("🔥 Чарты", "📊 Чарты"):
+        if menu_action == "charts":
             await bot_instance.clear_user_state(user_id)
             await message.reply_text(
                 "📊 <b>Выберите тип чартов:</b>", parse_mode="HTML",
@@ -10557,19 +11159,38 @@ async def handle_message(update: Update, context: CallbackContext) -> None:
                     [InlineKeyboardButton("🎵 Поп", callback_data="charts:pop")],
                     [InlineKeyboardButton("🎤 Хип-хоп", callback_data="charts:hiphop")],
                     [InlineKeyboardButton("🎧 Электроника", callback_data="charts:electronic")],
+                    [InlineKeyboardButton("❌ Закрыть", callback_data="close_search")],
                 ]),
             )
             return
-        if message_text in ("🎧 Похожие", "👥 Похожие исполнители"):
+        if menu_action == "similar":
             await bot_instance.set_user_state(user_id, "similar_artists")
             await message.reply_text(
-                "🎧 <b>Введите имя исполнителя, чтобы найти похожих:</b>",
+                "🎧 <b>Введите имя исполнителя, чтобы найти похожих:</b>\n\n"
+                "Например: <i>Miyagi</i>",
                 parse_mode="HTML", reply_markup=private_main_keyboard(),
             )
             return
-        if message_text in ("❓ Помощь", "🆘 Помощь"):
+        if menu_action == "favorites":
+            await bot_instance.clear_user_state(user_id)
+            await favorites_command(update, context)
+            return
+        if menu_action == "history":
+            await bot_instance.clear_user_state(user_id)
+            await history_command(update, context)
+            return
+        if menu_action == "settings":
+            await bot_instance.clear_user_state(user_id)
+            await settings_command(update, context)
+            return
+        if menu_action == "help":
             await bot_instance.clear_user_state(user_id)
             await help_command(update, context)
+            return
+
+        state = await bot_instance.get_user_state(user_id)
+        if state and state.get("state") == "similar_artists":
+            await handle_similar_artists_input(update, context)
             return
 
         await bot_instance.clear_user_state(user_id)
@@ -10650,11 +11271,15 @@ class BotRunner:
             CommandHandler("search", search_command),
             CommandHandler("help", help_command),
             CommandHandler("history", history_command),
+            CommandHandler("favorites", favorites_command),
+            CommandHandler("favorite", favorite_last_command),
             CommandHandler("repeat", repeat_last_command),
+            CommandHandler("settings", settings_command),
             CommandHandler("admin", admin_command),
             CommandHandler("tokens", admin_tokens),
             CommandHandler("mix", user_mix_command),
-            CommandHandler("playlist", user_mix_command),
+            CommandHandler("playlist", playlist_command),
+            CommandHandler("album", playlist_command),
             CommandHandler("digest", digest_command),
             MessageHandler(filters.Document.ALL, handle_document_upload),
             MessageHandler(filters.CONTACT, handle_contact),
@@ -10743,6 +11368,13 @@ class BotRunner:
         
         if bot_instance:
             try:
+                if hasattr(bot_instance, "download_queue"):
+                    await bot_instance.download_queue.close()
+                if hasattr(bot_instance, "playlist_manager"):
+                    await bot_instance.playlist_manager.close()
+            except Exception:
+                logger.exception("Ошибка при закрытии download queue")
+            try:
                 if hasattr(bot_instance, 'close_session'):
                     await bot_instance.close_session()
                 elif hasattr(bot_instance, 'shutdown'):
@@ -10789,7 +11421,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 async def main():
     """Основная функция"""
     if not config.TELEGRAM_BOT_TOKEN:
-        raise RuntimeError("Не установлен TELEGRAM_BOT_TOKEN в config.py")
+        raise RuntimeError("Не установлен TELEGRAM_BOT_TOKEN. Задайте его в окружении или в systemd EnvironmentFile.")
     if not acquire_single_instance_lock():
         raise RuntimeError("Другой экземпляр бота уже запущен (instance lock занят)")
 

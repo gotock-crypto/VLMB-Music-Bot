@@ -37,9 +37,11 @@ def parse_env_file(path: Path) -> dict[str, str]:
             continue
         value = value.strip()
         try:
+            # shlex handles quoted values while leaving ordinary values alone.
             parts = shlex.split(value, comments=True, posix=True)
             value = parts[0] if parts else ""
         except ValueError:
+            # Fall back to the raw value; presence is all preflight needs.
             value = value.strip("'\"")
         values[key] = value
     return values

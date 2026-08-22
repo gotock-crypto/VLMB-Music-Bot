@@ -86,6 +86,10 @@ rsync -a --delete \
   "$RELEASE_DIR/" "$APP_DIR/"
 
 cp "$APP_DIR/systemd/vlmb-musicbot.service" /etc/systemd/system/musicbot.service
+if [[ -f "$APP_DIR/systemd/vlmb-healthcheck.service" && -f "$APP_DIR/systemd/vlmb-healthcheck.timer" ]]; then
+  cp "$APP_DIR/systemd/vlmb-healthcheck.service" /etc/systemd/system/vlmb-healthcheck.service
+  cp "$APP_DIR/systemd/vlmb-healthcheck.timer" /etc/systemd/system/vlmb-healthcheck.timer
+fi
 systemctl daemon-reload
 
 "$APP_DIR/venv/bin/python3" "$APP_DIR/scripts/preflight.py" --env-file "$APP_DIR/.env"
@@ -96,6 +100,9 @@ sleep 8
 systemctl is-active --quiet "$SERVICE"
 pgrep -fc music_bot_user_mixes.py | grep -qx '1'
 "$APP_DIR/venv/bin/python3" "$APP_DIR/scripts/healthcheck.py"
+if [[ -f /etc/systemd/system/vlmb-healthcheck.timer ]]; then
+  systemctl enable --now vlmb-healthcheck.timer
+fi
 
 trap - ERR
 echo "Deployment completed successfully. Backup: $BACKUP"

@@ -1,0 +1,12 @@
+[Unit]
+Description=VLMB Music Bot production health monitor
+After=network-online.target musicbot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/MusBot
+EnvironmentFile=/root/MusBot/.env
+ExecStart=/root/MusBot/venv/bin/python3 /root/MusBot/scripts/monitor.py
+User=root
+UMask=0077

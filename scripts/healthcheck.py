@@ -21,7 +21,7 @@ def report(ok: bool, label: str, detail: str = ""):
 
 report(not (ROOT / ".env").exists() or (ROOT / ".env").stat().st_mode & 0o077 == 0, ".env permissions", "0600 or stricter")
 
-secret_re = re.compile(r"(?:api\.telegram\.org/bot|TELEGRAM_BOT_TOKEN\s*=\s*['\"]?[0-9]{5,}:[A-Za-z0-9_-]+|YANDEX_TOKEN\s*=\s*['\"]?y0_)")
+secret_re = re.compile(r"(?:api\.telegram\.org/bot|TELEGRAM_BOT_TOKEN\s*=\s*[\'\"]?[0-9]{5,}:[A-Za-z0-9_-]+|YANDEX_TOKEN\s*=\s*[\'\"]?y0_)")
 for path in [ROOT / "config.py", ROOT / "music_bot_user_mixes.py"]:
     text = path.read_text(errors="ignore") if path.exists() else ""
     report(not secret_re.search(text), f"no hard-coded token in {path.name}")
