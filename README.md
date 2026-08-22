@@ -1,165 +1,106 @@
-# 🎵 VLMB Music Bot
+# 🎵 VLMB Music Bot 3.0.6
 
-**Асинхронный Telegram-бот для поиска и скачивания музыки** из трёх популярных источников: **Яндекс.Музыка**, **VK** и **YouTube**.
+**Асинхронный Telegram-бот для поиска и скачивания музыки** из Яндекс.Музыки, VK и YouTube.
 
-Бот разработан с использованием AI-ассистентов (Cursor, Claude Code) и ориентирован на высокую нагрузку: 500+ активных пользователей, 1000+ запросов в день, среднее время ответа < 2 секунды, uptime 99.9%.
+VLMB ориентирован на стабильную production-работу: асинхронный поиск и загрузка, маршрутизация провайдеров с failover, кеширование, очередь загрузок, история и избранное, playlist/album discovery, метрики, healthcheck и безопасный деплой.
 
----
+## Что нового в 3.0.6
 
-## 🚀 Возможности
+- ❤️ Исправлена работа избранного для provider-prefixed UID (`vk:...`, `yt:...`, `ym:...`, `h:...`).
+- ❤️ Кнопка избранного после скачивания работает через нативный Telegram callback.
+- 🔁 После добавления в избранное кнопка меняется на «💔 Убрать из избранного».
+- 🧩 Обработчик использует точный UID из истории/избранного и не преобразует его в другой hash UID.
+- 🛡️ Сохранены legacy deep-link и pending-favorite fallback для совместимости.
+- 🧪 Добавлены regression-тесты для VK-prefixed и hash UID.
 
-- 🔍 Поиск музыки по названию трека или исполнителю.
-- 🎵 Интеграция с API Яндекс.Музыки, VK Audio и YouTube (yt-dlp).
-- ⚡ Асинхронная архитектура (asyncio, aiohttp) для высокой производительности.
-- 🧠 Кеширование результатов через Redis + LRU-кеш.
-- 📦 Умная маршрутизация: приоритет точного совпадения с исполнителем.
-- 🎧 Скачивание и отправка аудиофайлов в Telegram.
-- 🛡️ Автоматические ретраи с backoff, ротация токенов VK.
-- 📊 Встроенная админ-панель для управления токенами и настройками.
-- 🎲 Подборки по жанрам (Deezer) и поиск похожих исполнителей (Last.fm).
-- 💾 Кеширование Telegram `file_id` для мгновенной отправки ранее загруженных треков.
+## Основные возможности
 
----
+- 🔎 Поиск по названию трека или исполнителю.
+- 🎵 Источники: Яндекс.Музыка, VK и YouTube через `yt-dlp`.
+- 🧠 Search Engine: нормализация, artist/title scoring и дедупликация.
+- 🏥 Provider Router: классификация ошибок, circuit breaker и failover.
+- ⚡ Redis + LRU cache и persistent search sessions.
+- 📦 Bounded Download Queue: workers, retry, cancellation и concurrency limits.
+- 📚 `/playlist` и `/album` для URL-based discovery с пакетной очередью.
+- ❤️ История, избранное и повторная загрузка.
+- ⚙️ `/settings` для выбора предпочтительного источника и качества.
+- 📊 Метрики запросов, загрузок, состояния провайдеров и P50/P95/P99 latency.
+- 🚨 Production health monitor с уведомлениями об ошибках и восстановлении.
+- 🛡️ Secret scan, input/path safety и rate limits.
+- 🚀 Preflight, healthcheck, release audit, backup и automatic rollback.
+- 🎲 Подборки, чарты, похожие исполнители и групповые digest.
 
-## 🛠️ Стек технологий
+## Бесплатный сервис
 
-| Компонент | Технология |
-|-----------|------------|
-| Язык | Python 3.12+ |
-| Фреймворк | python-telegram-bot (асинхронный) |
-| Веб-фреймворк | aiohttp |
-| Кеширование | Redis + LRU-кеш в памяти |
-| База данных | SQLite (aiosqlite) |
-| Музыкальные API | Yandex Music, VK API, YouTube (yt-dlp) |
-| Администрирование | systemd, Ubuntu VPS, Docker |
-| AI-инструменты | ChatGPT, Claude, Cursor |
+VLMB полностью бесплатен. В проекте **нет монетизации, Premium, платежей или подписок**.
 
----
+## Структура
 
-## 📦 Установка и запуск
+```text
+music_bot_user_mixes.py   # Основное приложение и существующая логика бота
+config.py                 # Runtime-конфигурация
+services/
+  provider_router.py       # Failover + circuit breaker
+  search_engine.py        # Ranking + dedup
+  provider_health.py      # Состояние провайдеров
+  metrics.py              # Метрики и latency
+  download_queue.py       # Асинхронная очередь загрузок
+  playlist_manager.py     # Playlist/album discovery
+  security.py             # Проверки входных данных и путей
+scripts/
+  preflight.py
+  healthcheck.py
+  release_audit.py
+  deploy_release.sh
+  rollback_release.sh
+  monitor.py
+systemd/
+  vlmb-musicbot.service
+  vlmb-healthcheck.service
+  vlmb-healthcheck.timer
+.github/workflows/ci.yml
+```
 
-### 1. Клонируйте репозиторий
+## Production requirements
+
+- Ubuntu 24.04+
+- Python 3.12+
+- production `.env` с секретами вне Git
+- SQLite/Redis данные сохраняются при деплое
+- Redis рекомендуется; локальный LRU fallback остаётся доступным
+
+## Установка и запуск
+
 ```bash
 git clone https://github.com/gotock-crypto/VLMB-Music-Bot.git
 cd VLMB-Music-Bot
-```
-
-### 2. Создайте виртуальное окружение
-```bash
 python3 -m venv venv
-source venv/bin/activate  # Для Linux/macOS
-venv\Scripts\activate     # Для Windows
-```
-
-### 3. Установите зависимости
-```bash
+source venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 4. Настройте переменные окружения
-Создайте файл `.env` на основе примера:
-```bash
 cp .env.example .env
-```
-Заполните в `.env` свои токены:
-```
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-YANDEX_TOKEN=your_yandex_token
-VK_TOKEN=your_vk_token
-LASTFM_API_KEY=your_lastfm_api_key
-REDIS_URL=redis://localhost:6379/0
-```
-
-### 5. Запустите бота
-```bash
 python music_bot_user_mixes.py
 ```
 
----
+## Production deployment
 
-## 🌐 Деплой на сервер
+Для продакшена используйте `README_DEPLOYMENT_QUICK.md` и `DEPLOYMENT.md`.
 
-Для продакшена рекомендуется использовать **systemd** для автозапуска и перезапуска.
+Deployment script выполняет preflight/release validation, создаёт backup, сохраняет `.env` и данные, обновляет приложение, перезапускает systemd-сервис, запускает healthcheck и при ошибке выполняет rollback.
 
-Пример файла `/etc/systemd/system/musicbot.service`:
-```ini
-[Unit]
-Description=VLMB Music Bot
-After=network.target
+## Проверки
 
-[Service]
-User=root
-WorkingDirectory=/root/MusBot
-ExecStart=/root/MusBot/venv/bin/python3 /root/MusBot/music_bot_user_mixes.py
-Restart=always
-RestartSec=10
-EnvironmentFile=/root/MusBot/.env
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Затем выполните:
 ```bash
-systemctl enable musicbot
-systemctl start musicbot
+python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py
+python -m pytest -q
+python scripts/release_audit.py --ci
 ```
 
----
+Для версии 3.0.6 добавлены отдельные regression-тесты для callback/pending-favorite логики и provider-prefixed UID.
 
-## 🧠 Архитектура проекта
+## Безопасность
 
-```text
-MusBot/
-├── music_bot_user_mixes.py   # Основной код бота
-├── config.py                  # Конфигурация (токены, настройки)
-├── bot_stats.db               # SQLite база данных (создаётся автоматически)
-├── vk_tokens.db               # Хранилище VK токенов
-├── requirements.txt           # Зависимости Python
-├── .env.example               # Шаблон для переменных окружения
-└── README.md                  # Этот файл
-```
+Секреты не хранятся в Git. Используйте `.env` на сервере и `.env.example` как шаблон. Файл `.env` исключён из репозитория.
 
-**Ключевые модули:**
-- `YandexMusicManager` — работа с API Яндекс.Музыки.
-- `YoutubeMusicManager` — загрузка аудио через yt-dlp.
-- `AsyncVKTokenManager` — управление и ротация токенов VK.
-- `AsyncCacheManager` — кеширование через Redis + локальный LRU.
-- `AsyncSessionManager` — управление сессиями поиска пользователей.
-- `AdminDB` — админ-панель для статистики, банов, рассылок.
-- `UserStore` — хранение истории и предпочтений пользователей.
-
----
-
-## 🔒 Безопасность
-
-- Все токены хранятся в `.env` и **не** попадают в репозиторий.
-- Для VK реализована ротация токенов и автоматическое обновление.
-- Настроена фильтрация секретов в логах.
-- Поддерживается бан пользователей через админ-панель.
-
----
-
-## 📈 Мониторинг и надежность
-
-- **Uptime:** 99.9% (подтверждено на production).
-- **MTTR:** < 5 минут (автоматический перезапуск через systemd).
-- **Логирование:** ротация логов, мониторинг состояния через `journalctl`.
-- **Кеширование:** Redis + локальный LRU-кеш для снижения нагрузки на API.
-
----
-
-## 🤝 Вклад и развитие
-
-Проект активно развивается. Для предложений и баг-репортов создавайте Issues или Pull Requests.
-
----
-
-## 📝 Лицензия
+## Лицензия
 
 MIT License
-
----
-
-## ✉️ Контакты
-**GitHub:** [gotock-crypto](https://github.com/gotock-crypto)
