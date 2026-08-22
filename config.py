@@ -7,9 +7,10 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+# Secrets and API credentials. Environment variables override stored values.
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN", "").strip()
-YANDEX_TOKEN = _env("YANDEX_TOKEN", "").strip()
 VK_TOKEN = _env("VK_TOKEN", "").strip()
+YANDEX_TOKEN = _env("YANDEX_TOKEN", "").strip()
 LASTFM_API_KEY = _env("LASTFM_API_KEY", "").strip()
 
 # Access control.
@@ -23,8 +24,8 @@ VK_TOKENS_DB_PATH = "vk_tokens.db"
 DB_WAL_MODE = True
 DATABASE_TIMEOUT = 20
 
-# Redis and transient user/search sessions.
-REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
+# Redis and transient user/search sessions. Redis is optional; local memory is the fallback.
+REDIS_URL = _env("REDIS_URL", "").strip()
 REDIS_MAX_CONNECTIONS = 80
 REDIS_TIMEOUT = 3
 SESSION_REDIS_PREFIX = "vlmb:sess:"
@@ -48,10 +49,10 @@ LOG_LEVEL = "INFO"
 LOG_FILE = "bot-debug.log"
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 5
-INSTANCE_LOCK_FILE = ""
+INSTANCE_LOCK_FILE = _env("INSTANCE_LOCK_FILE", "").strip()
 
 # Shared HTTP client.
-USER_AGENT = "KateMobileAndroid/51.1-442 (Android 11; SDK 30; arm64-v8a; Samsung SM-G991B; ru_RU)"
+USER_AGENT = "KateMobileAndroid/51.1-442 (Android 11; SDK 30; arm64-v8a; ru_RU; Samsung SM-G991B)"
 REQUEST_TIMEOUT = 25
 HTTP_CONNECT_TIMEOUT = 8
 HTTP_SOCK_CONNECT_TIMEOUT = 8
@@ -120,7 +121,7 @@ YM_PREFERRED_MAX_BITRATE_KBPS = 192
 YANDEX_CONCURRENCY = 8
 YM_SYNC_MAX_WORKERS = 12
 
-# YouTube / yt-dlp. ffmpeg is optional but required for codec conversion.
+# YouTube / yt-dlp.
 YOUTUBE_SEARCH_TIMEOUT = 15
 YOUTUBE_DOWNLOAD_TIMEOUT = 180
 YOUTUBE_CONCURRENCY = 2
@@ -129,10 +130,12 @@ YOUTUBE_SEARCH_RETRIES = 2
 YOUTUBE_DOWNLOAD_RETRIES = 3
 YOUTUBE_RETRY_SLEEP = 1.0
 YOUTUBE_AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
-YOUTUBE_AUDIO_CODEC = "mp3"  # Empty string disables ffmpeg conversion.
+YOUTUBE_AUDIO_CODEC = "mp3"
 YOUTUBE_AUDIO_QUALITY = "192"
-YOUTUBE_FFMPEG_LOCATION = ""  # Empty string searches PATH.
+YOUTUBE_FFMPEG_LOCATION = ""
 YOUTUBE_COOKIE_FILE = ""
+YOUTUBE_PLAYER_CLIENTS = "tv,web_safari"
+YOUTUBE_JS_RUNTIME = "deno"
 
 # Search result UI and background enrichment.
 SONGS_PER_PAGE = 10
@@ -156,23 +159,16 @@ DOWNLOAD_ALL_WORKERS = 0
 DOWNLOAD_ALL_LIMIT = 60
 TRACK_CREDIT_CAPTION = 'Скачано через <a href="https://t.me/VLMB_1_bot">VLMB</a>'
 
-# User history.
 HISTORY_LIMIT = 20
-
-# Last.fm similar artists.
 POPULAR_TRACKS_LIMIT = 15
 SIMILAR_ARTISTS_LIMIT = 8
 LASTFM_BASE_URL = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_BATCH_SIZE = 12
 LASTFM_REQUEST_DELAY = 0.03
-
-# Deezer charts and user mixes.
 DEEZER_API_BASE_URL = "https://api.deezer.com"
 DEEZER_TIMEOUT = 10
 DEEZER_CONCURRENCY = 4
 USER_MIX_NO_REPEAT_DAYS = 7
-
-# Scheduled group digests.
 DIGEST_TIMEZONE = "Europe/Amsterdam"
 DIGEST_MAX_PER_GROUP = 12
 DIGEST_NO_REPEAT_DAYS = 120
@@ -188,15 +184,14 @@ DIGEST_YOUTUBE_DOWNLOAD_TIMEOUT = 45.0
 DIGEST_BATCH_DELAY = 0.25
 DIGEST_AUDIO_INDEX_TTL = 300
 DIGEST_AUDIO_INDEX_LIMIT = 100000
-
-# Keepalive after idle periods.
 KEEPALIVE_IDLE_SECONDS = 120
 KEEPALIVE_INTERVAL_SECONDS = 300
 KEEPALIVE_WARMUP_QUERY = "music"
-
-# Admin Excel file_id warmup.
 EXCEL_WARMUP_TRACKS_PER_ARTIST = 5
 EXCEL_WARMUP_MIN_TRACKS_PER_ARTIST = 1
 EXCEL_WARMUP_MAX_ARTISTS = 1_000_000
 EXCEL_WARMUP_CONCURRENCY = 2
 EXCEL_WARMUP_SEND_DELAY = 0.15
+PROVIDER_METRICS_LOG_INTERVAL = 300
+SEARCH_METRICS_LOG_INTERVAL = 300
+HEALTHCHECK_DB_PATHS = (STATS_DB_PATH, VK_TOKENS_DB_PATH)
