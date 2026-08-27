@@ -22,12 +22,6 @@ def _source_code(value: Any) -> str:
 
 @dataclass
 class TrackInfo:
-    """Information about a track from any source.
-
-    The dict-like methods intentionally preserve the legacy core contract so
-    call sites can migrate without changing runtime behavior.
-    """
-
     idx: int
     track_id: Any
     title: str
@@ -46,7 +40,6 @@ class TrackInfo:
     bitrate_kbps: Optional[int] = None
 
     def _compute_uid(self) -> str:
-        """Return the stable UID used by routing, favorites and history."""
         try:
             if self.source == "ym" and self.track_id:
                 return f"ym:{self.track_id}"
@@ -74,21 +67,11 @@ class TrackInfo:
             value = self.youtube_url if self.source == "yt" else self.vk_url
             return value if value is not None else default
         mapping = {
-            "idx": "idx",
-            "track_id": "track_id",
-            "title": "title",
-            "artist": "artist",
-            "album": "album",
-            "duration": "duration_sec",
-            "duration_sec": "duration_sec",
-            "source": "source",
-            "vk_url": "vk_url",
-            "vk_key": "vk_key",
-            "youtube_id": "youtube_id",
-            "youtube_url": "youtube_url",
-            "audio_ext": "audio_ext",
-            "uid": "uid",
-            "bitrate_kbps": "bitrate_kbps",
+            "idx": "idx", "track_id": "track_id", "title": "title", "artist": "artist",
+            "album": "album", "duration": "duration_sec", "duration_sec": "duration_sec",
+            "source": "source", "vk_url": "vk_url", "vk_key": "vk_key",
+            "youtube_id": "youtube_id", "youtube_url": "youtube_url", "audio_ext": "audio_ext",
+            "uid": "uid", "bitrate_kbps": "bitrate_kbps",
         }
         attr = mapping.get(key)
         if attr is None:
@@ -107,47 +90,28 @@ class TrackInfo:
     def to_dict(self) -> Dict[str, Any]:
         uid = self.ensure_uid()
         return {
-            "idx": self.idx,
-            "track_id": str(self.track_id),
-            "title": self.title,
-            "artist": self.artist,
-            "album": self.album,
-            "duration_sec": self.duration_sec,
-            "source": self.source,
-            "vk_url": self.vk_url,
-            "vk_key": self.vk_key,
-            "youtube_id": self.youtube_id,
-            "youtube_url": self.youtube_url,
-            "audio_ext": self.audio_ext,
-            "uid": uid,
-            "bitrate_kbps": self.bitrate_kbps,
+            "idx": self.idx, "track_id": str(self.track_id), "title": self.title,
+            "artist": self.artist, "album": self.album, "duration_sec": self.duration_sec,
+            "source": self.source, "vk_url": self.vk_url, "vk_key": self.vk_key,
+            "youtube_id": self.youtube_id, "youtube_url": self.youtube_url,
+            "audio_ext": self.audio_ext, "uid": uid, "bitrate_kbps": self.bitrate_kbps,
             "duration": self.duration_sec,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "TrackInfo":
         track = cls(
-            idx=data["idx"],
-            track_id=data["track_id"],
-            title=data["title"],
-            artist=data["artist"],
-            album=data.get("album", ""),
-            duration_sec=data["duration_sec"],
-            source=data.get("source", "vk"),
-            vk_url=data.get("vk_url"),
-            vk_key=data.get("vk_key"),
-            youtube_id=data.get("youtube_id"),
+            idx=data["idx"], track_id=data["track_id"], title=data["title"], artist=data["artist"],
+            album=data.get("album", ""), duration_sec=data["duration_sec"], source=data.get("source", "vk"),
+            vk_url=data.get("vk_url"), vk_key=data.get("vk_key"), youtube_id=data.get("youtube_id"),
             youtube_url=data.get("youtube_url") or (data.get("url") if data.get("source") == "yt" else None),
-            audio_ext=data.get("audio_ext"),
-            uid=data.get("uid"),
-            bitrate_kbps=data.get("bitrate_kbps"),
+            audio_ext=data.get("audio_ext"), uid=data.get("uid"), bitrate_kbps=data.get("bitrate_kbps"),
         )
         track.ensure_uid()
         return track
 
 
 def track_uid_from_any(track: Any) -> str:
-    """Return the canonical UID for a TrackInfo or compatible mapping."""
     if track is None:
         return ""
     if isinstance(track, TrackInfo):
