@@ -1,31 +1,18 @@
 # VLMB 4.0.0-rc2 Release Notes
 
 ## Phase 1 — Safe Foundation
-
-- Added the enterprise architecture audit.
-- Preserved the giant core as a compatibility bootstrap.
-- Added `DownloadTrack` beside the existing `SearchMusic` application boundary.
-- Retained provider-independent adapter routing, health and failover.
-- Preserved callback catalog and explicit state-machine contracts.
+- Enterprise architecture audit.
+- SearchMusic and DownloadTrack application boundaries.
+- Provider-independent adapter routing, health and failover.
+- Callback/state safety retained.
 
 ## Phase 2 — Reliability & Operations
-
-- Added user-scoped idempotent download queue submission.
-- Added graceful queue shutdown with bounded drain timeout.
-- Added safe structured JSON event logging with credential redaction.
-- Documented initial SLOs and threat model/security controls.
-- Added regression tests for idempotency, shutdown, DownloadTrack failover and log redaction.
-- Added release artifact integrity enforcement to CI.
+- User-scoped idempotent download queue submission.
+- Graceful queue shutdown with bounded drain timeout.
+- Safe structured JSON event logging with credential redaction.
+- Initial SLOs, security controls and threat model.
+- Regression tests for idempotency, shutdown, DownloadTrack failover and log redaction.
+- Release artifact integrity gate in CI.
 
 ## Safety
-
-- No production database migration.
-- No `.env` change.
-- No production directory change.
-- No systemd architecture change.
-- No provider semantic rewrite.
-- No destructive production operation.
-
-## Acceptance gate
-
-This release candidate requires clean-checkout tests, artifact validation and server-side smoke/rollback verification before production acceptance.
+No production database migration, `.env` change, production directory change, systemd architecture change, provider semantic rewrite or destructive production operation.
