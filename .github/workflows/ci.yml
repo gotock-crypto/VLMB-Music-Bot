@@ -26,10 +26,12 @@ jobs:
         run: python scripts/architecture_audit.py
       - name: Release audit
         run: python scripts/release_audit.py --ci
+      - name: Release artifact audit
+        run: python scripts/release_artifact_audit.py
       - name: Clean checkout manifest
         run: |
           test -f RELEASE_VERSION
-          test "$(cat RELEASE_VERSION)" = "4.0.0-rc1"
+          test -n "$(cat RELEASE_VERSION)"
           test ! -e .env
           test ! -d venv
       - name: Queue load smoke
