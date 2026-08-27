@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Dict, Iterable, List
 
 
 class ProviderFailure(RuntimeError):
@@ -42,7 +42,6 @@ class Circuit:
     successes: int = 0
 
     def open(self, cooldown: float, kind: str, error: str) -> None:
-        self.failures += 1
         self.last_kind = kind
         self.last_error = error[:240]
         self.opened_until = time.monotonic() + max(0.0, cooldown)
@@ -141,8 +140,6 @@ class ProviderRouter:
         return []
 
 # ---- VLMB 4.0 adapter boundary -------------------------------------------------
-# These helpers let new application code depend on the provider contract without
-# forcing a flag-day rewrite of the existing call(provider, operation, fn) API.
 async def _adapter_call(router: ProviderRouter, adapter, operation: str, fn):
     return await router.call(adapter.name, operation, fn)
 
