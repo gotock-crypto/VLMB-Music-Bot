@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from services.retry_policy import is_retryable
+
 
 @dataclass
 class DownloadJob:
@@ -36,6 +38,7 @@ class DownloadQueue:
         self._started = False
         self._closing = False
         self._idempotency: Dict[tuple[int, str], str] = {}
+        self.max_retries = 2
 
     async def start(self, handler: Callable[[DownloadJob], Awaitable[Any]]) -> None:
         if self._started:
@@ -71,12 +74,17 @@ class DownloadQueue:
                 job.status = "cancelled"
                 raise
             except Exception as exc:
-                job.retries += 1
                 job.error = str(exc)[:300]
-                if job.retries <= 2 and not self._closing:
-                    job.status = "queued"
+                if is_retryable(exc) and job.retries < self.max_retries and not self._closing:
+                    job.retries += 1
+                    job.status = "retrying"
+                    job.updated_at = time.time()
                     await asyncio.sleep(min(5.0, 0.5 * (2 ** (job.retries - 1))))
-                    await self._queue.put((job.priority, seq, job.job_id))
+                    if not self._closing and job.status == "retrying":
+                        job.status = "queued"
+                        await self._queue.put((job.priority, seq, job.job_id))
+                    elif self._closing:
+                        job.status = "failed"
                 else:
                     job.status = "failed"
             finally:
