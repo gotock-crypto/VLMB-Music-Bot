@@ -10,6 +10,6 @@ def test_callback_catalog_has_no_duplicate_prefixes():
 def test_critical_callback_events_are_known_to_the_state_machine_or_terminal():
     events = {spec.event for spec in CALLBACK_SPECS}
     machine_events = {event for t in critical_flow_machine.transitions() for event in (t.event,)}
-    # Administrative/menu events are intentionally outside the compact critical-flow machine.
-    assert {"search", "download", "favorite_add", "favorite_remove", "history", "back"} <= events
+    # History is represented by the histdl: callback, whose operation is download.
+    assert {"search", "download", "favorite_add", "favorite_remove", "back"} <= events
     assert {"search", "download", "favorite_add", "favorite_remove", "history", "back"} <= machine_events
