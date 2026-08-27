@@ -34,7 +34,19 @@ jobs:
           test -n "$(cat RELEASE_VERSION)"
           test ! -e .env
           test ! -d venv
-      - name: Queue load smoke
-        run: python scripts/load_test_queue.py --jobs 50 --concurrency 5 --work-ms 2
+      - name: Queue load baseline
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-load
+          for jobs in 1 5 10 25 50 100; do
+            concurrency=$(( jobs < 10 ? jobs : 10 ))
+            python scripts/load_test_queue.py --jobs "$jobs" --concurrency "$concurrency" --work-ms 20 | tee ".ci-load/jobs-${jobs}.txt"
+          done
+      - name: Upload load baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: vlmb-load-baseline-${{ github.sha }}
+          path: .ci-load/
+          retention-days: 14
       - name: Rollback drill simulation
         run: python scripts/rollback_drill.py
