@@ -16,8 +16,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Release artifact audit
+        run: python scripts/release_artifact_audit.py
       - name: Compile
-        run: python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py
+        run: python -m py_compile music_bot_user_mixes.py config.py application/**/*.py domain/*.py providers/*.py storage/*.py services/*.py scripts/*.py
       - name: Tests
         run: python -m pytest -q
       - name: Callback audit
@@ -26,8 +28,6 @@ jobs:
         run: python scripts/architecture_audit.py
       - name: Release audit
         run: python scripts/release_audit.py --ci
-      - name: Release artifact audit
-        run: python scripts/release_artifact_audit.py
       - name: Clean checkout manifest
         run: |
           test -f RELEASE_VERSION
