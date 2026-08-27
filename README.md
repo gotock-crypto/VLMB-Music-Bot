@@ -1,12 +1,12 @@
-# 🎵 VLMB Music Bot 4.0.0-rc1
+# 🎵 VLMB Music Bot 4.0.0-rc2
 
 Асинхронный Telegram-бот для поиска и скачивания музыки из Яндекс.Музыки, VK и YouTube.
 
-> **Статус:** `4.0.0-rc1` — Architecture & Reliability Release Candidate.
+> **Статус:** `4.0.0-rc2` — Architecture & Reliability Release Candidate.
 >
-> Production уже работает на RC1. При этом 4.0 остаётся поэтапным архитектурным refactor: `music_bot_user_mixes.py` пока сохраняется как compatibility bootstrap, а новые границы вводятся постепенно с обязательными тестами.
+> Production уже работает на RC2. 4.0 сохраняет поэтапный архитектурный рефакторинг: `music_bot_user_mixes.py` остаётся compatibility bootstrap, а новые границы вводятся постепенно с обязательными тестами.
 
-## Что есть в 4.0.0-rc1
+## Что есть в 4.0.0-rc2
 
 ### Пользовательские возможности
 
@@ -25,12 +25,12 @@
 - 🧠 **State Machine**: формализованные критические state transitions.
 - 🔌 **Provider Adapters**: единый интерфейс `search()`, `download()` и `health()` для provider implementations.
 - 🏥 **Provider Router**: failover, error classification и circuit-breaker primitives.
-- 📦 **Download Queue**: bounded async queue, workers, retry, cancellation и concurrency limits.
+- 📦 **Download Queue**: bounded async queue, workers, retry, cancellation, idempotent submission и graceful shutdown.
 - ⚡ **Cache**: Redis + LRU fallback и persistent search sessions.
 - 📊 **Metrics**: request/download metrics, provider health и P50/P95/P99 latency.
 - 🚨 **Health Monitor**: production healthchecks и recovery alerts.
 - 🛡️ **Security**: secret scan, input/path safety, rate limits и защита временных данных.
-- 🚀 **CI / Deployment**: GitHub Actions, preflight, release audit, backup, healthcheck и rollback flow.
+- 🚀 **CI / Deployment**: GitHub Actions, preflight, release audit, artifact integrity, backup, healthcheck и rollback flow.
 - 🔬 **Architecture Audit**: проверка границ `application / domain / providers / storage`.
 - 🧪 **Critical-flow tests**: callback/state contracts, provider adapters, queue/load smoke и rollback drill tests.
 
@@ -54,7 +54,7 @@ domain
  YM / VK / YT   SQLite / session state
 ```
 
-Ключевое правило миграции: каждая новая выделенная ответственность получает тесты **до** удаления старой реализации. Именно поэтому основной `music_bot_user_mixes.py` пока остаётся compatibility bootstrap. citeturn9file0
+Ключевое правило миграции: каждая новая выделенная ответственность получает тесты до удаления старой реализации. Основной `music_bot_user_mixes.py` пока остаётся compatibility bootstrap.
 
 ## Структура
 
@@ -64,26 +64,31 @@ config.py                 # Runtime-конфигурация
 application/
   callbacks/              # Callback catalog + audit
   state/                  # State machine / transitions
+  use_cases/              # SearchMusic / DownloadTrack
+
 domain/
   models.py               # Domain models
   errors.py               # Domain errors
+  track_info.py           # Canonical track identity
 providers/
   base.py                 # Единый provider contract
   adapters.py             # Provider adapters
 storage/
   contracts.py            # Storage/session contracts
 services/
-  provider_router.py      # Failover + circuit breaker primitives
+  provider_router.py      # Failover + circuit breaker
   provider_health.py      # Состояние провайдеров
   metrics.py              # Метрики и latency
   download_queue.py       # Bounded async queue
   search_engine.py        # Ranking + dedup
   playlist_manager.py     # Playlist/album discovery
   security.py             # Проверки входных данных и путей
+  structured_logging.py   # Safe structured events
 scripts/
   preflight.py
   healthcheck.py
   release_audit.py
+  release_artifact_audit.py
   callback_audit.py
   architecture_audit.py
   load_test_queue.py
@@ -91,10 +96,6 @@ scripts/
   deploy_release.sh
   rollback_release.sh
   monitor.py
-systemd/
-  vlmb-musicbot.service
-  vlmb-healthcheck.service
-  vlmb-healthcheck.timer
 .github/workflows/ci.yml
 ```
 
@@ -127,23 +128,22 @@ healthcheck
 SUCCESS
 ```
 
-При ошибке deployment должен обеспечивать rollback к предыдущему рабочему release. Для 4.0.0-rc1 дополнительно предусмотрен rollback drill. Перед RC1 должны пройти CI и server-side Telegram smoke tests; pre-release backup следует сохранять до завершения проверки. citeturn9file0
+При ошибке deployment выполняется rollback к предыдущему рабочему release. Перед каждым release backup сохраняется до завершения проверки.
 
 ## Проверки
 
 Локально или в CI рекомендуется выполнить:
 
 ```bash
-python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py tests/*.py
+python -m py_compile music_bot_user_mixes.py config.py services/*.py scripts/*.py application/use_cases/*.py domain/*.py providers/*.py storage/*.py
 python -m pytest -q
 python scripts/release_audit.py --ci
 python scripts/callback_audit.py
 python scripts/architecture_audit.py
+python scripts/release_artifact_audit.py
 python scripts/load_test_queue.py --jobs 100 --concurrency 10 --work-ms 20
 python scripts/rollback_drill.py
 ```
-
-Для 4.0.0-rc1 в репозитории находятся regression-тесты для callback/state contracts, critical flows, provider adapters/failover, queue/load behavior, rollback drill и storage contracts.
 
 ## Безопасность
 
@@ -162,7 +162,7 @@ VLMB полностью бесплатен. В проекте **нет моне�
 Текущий release candidate:
 
 ```text
-VLMB 4.0.0-rc1
+VLMB 4.0.0-rc2
 ```
 
 ## Лицензия
