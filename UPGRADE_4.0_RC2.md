@@ -13,7 +13,7 @@ ssh root@45.43.90.131
 rm -rf /root/vlmb_release
 mkdir -p /root/vlmb_release
 tar -xzf /root/VLMB-release-rc2.tar.gz -C /root/vlmb_release
-mv /root/vlmb_release/VLMB-Music-Bot-4.0.0-rc1 /root/vlmb_release/MusBot
+mv /root/vlmb_release/VLMB-Music-Bot-4.0.0-rc2 /root/vlmb_release/MusBot
 cd /root/vlmb_release/MusBot
 ```
 
