@@ -140,6 +140,8 @@ class ProviderRouter:
         return []
 
 # ---- VLMB 4.0 adapter boundary -------------------------------------------------
+# These helpers let new application code depend on the provider contract without
+# forcing a flag-day rewrite of the existing call(provider, operation, fn) API.
 async def _adapter_call(router: ProviderRouter, adapter, operation: str, fn):
     return await router.call(adapter.name, operation, fn)
 
