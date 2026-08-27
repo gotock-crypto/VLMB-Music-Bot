@@ -24,7 +24,7 @@ The 4.0 architecture remains an incremental boundary extraction. `music_bot_user
 ## Release identity
 
 - Version: `4.0.0-rc2`
-- Source branch: `feat/release-integrity`
+- Source branch: `master`
 - Source commit for the package: recorded at package build time.
 - Python: 3.12 CI baseline.
 
