@@ -5,7 +5,7 @@ registered and tested independently of Telegram objects.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Iterable, Mapping
+from typing import Dict, FrozenSet, Iterable
 from domain.errors import InvalidTransition
 
 @dataclass(frozen=True)
@@ -40,6 +40,9 @@ class StateMachine:
 # payloads; this machine models the lifecycle that must remain valid.
 CRITICAL_TRANSITIONS = (
     Transition("idle", "search", "searching"),
+    Transition("idle", "charts", "charts"),
+    Transition("idle", "settings", "settings"),
+    Transition("idle", "help", "help"),
     Transition("searching", "result", "results"),
     Transition("results", "download", "downloading"),
     Transition("downloading", "download_ok", "track_ready"),
@@ -55,6 +58,9 @@ CRITICAL_TRANSITIONS = (
     Transition("results", "back", "idle"),
     Transition("history", "back", "idle"),
     Transition("favorite_ready", "back", "idle"),
+    Transition("charts", "back", "idle"),
+    Transition("settings", "back", "idle"),
+    Transition("help", "back", "idle"),
     Transition("downloading", "download_failed", "results"),
 )
 
