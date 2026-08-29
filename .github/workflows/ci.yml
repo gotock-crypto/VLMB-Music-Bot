@@ -43,7 +43,7 @@ jobs:
             python scripts/load_test_queue.py --jobs "$jobs" --concurrency "$concurrency" --work-ms 20 | tee ".ci-load/jobs-${jobs}.txt"
           done
       - name: Upload load baseline
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vlmb-load-baseline-${{ github.sha }}
           path: .ci-load/
