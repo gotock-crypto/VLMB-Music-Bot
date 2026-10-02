@@ -5,7 +5,7 @@ import asyncio
 import json
 import time
 from collections import defaultdict, deque
-from typing import Any, Dict
+from typing import Any
 
 
 class MetricsRegistry:
@@ -28,7 +28,7 @@ class MetricsRegistry:
         await self.inc(f"{name}.success" if ok else f"{name}.errors")
         await self.observe(name, seconds)
 
-    async def snapshot(self) -> Dict[str, Any]:
+    async def snapshot(self) -> dict[str, Any]:
         async with self._lock:
             lat = {}
             for name, samples in self.latencies.items():

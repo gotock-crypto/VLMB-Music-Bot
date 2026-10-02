@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Deterministic concurrency/queue smoke load test without external services."""
 from __future__ import annotations
-import argparse, asyncio, statistics, time
+
+import argparse
+import asyncio
+import statistics
+import time
+
 
 async def run(total: int, concurrency: int, work_ms: int):
     sem = asyncio.Semaphore(concurrency)

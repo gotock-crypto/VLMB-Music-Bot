@@ -5,9 +5,10 @@ This is an isolated preflight simulation. A production operator can prove
 the real rollback path with deploy_release.sh + FORCE_FAIL_AFTER_CUTOVER=1.
 That guarded flag is intentionally required for the production drill.
 """
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import shutil
+
 
 def main():
     with TemporaryDirectory(prefix='vlmb-rollback-drill-') as td:

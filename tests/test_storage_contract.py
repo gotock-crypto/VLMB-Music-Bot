@@ -1,5 +1,7 @@
 import pytest
+
 from storage.contracts import InMemoryUserStateStore
+
 
 @pytest.mark.asyncio
 async def test_state_store_roundtrip_and_clear():

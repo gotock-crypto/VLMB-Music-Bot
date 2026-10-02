@@ -1,4 +1,4 @@
-from .base import MusicProviderAdapter, CallableProviderAdapter
-from .adapters import YandexProviderAdapter, VKProviderAdapter, YouTubeProviderAdapter
+from .adapters import VKProviderAdapter, YandexProviderAdapter, YouTubeProviderAdapter
+from .base import CallableProviderAdapter, MusicProviderAdapter
 
-__all__ = ["MusicProviderAdapter", "CallableProviderAdapter", "YandexProviderAdapter", "VKProviderAdapter", "YouTubeProviderAdapter"]
+__all__ = ["CallableProviderAdapter", "MusicProviderAdapter", "VKProviderAdapter", "YandexProviderAdapter", "YouTubeProviderAdapter"]

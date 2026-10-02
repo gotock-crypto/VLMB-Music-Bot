@@ -1,10 +1,10 @@
 """In-process provider health metrics with zero external dependencies."""
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from time import monotonic
-import re
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 @dataclass
@@ -13,8 +13,8 @@ class _Counter:
     failure: int = 0
     total_latency_ms: float = 0.0
     last_latency_ms: float = 0.0
-    last_success_ts: Optional[float] = None
-    last_failure_ts: Optional[float] = None
+    last_success_ts: float | None = None
+    last_failure_ts: float | None = None
     last_error: str = ""
     consecutive_failures: int = 0
     last_count: int = 0
@@ -32,7 +32,7 @@ class ProviderHealth:
     """Track search/download reliability without changing provider behavior."""
 
     def __init__(self) -> None:
-        self._data: Dict[str, _Counter] = defaultdict(_Counter)
+        self._data: dict[str, _Counter] = defaultdict(_Counter)
 
     def record_success(self, provider: str, operation: str, latency_ms: float, count: int = 0) -> None:
         c = self._data[f"{provider}:{operation}"]
@@ -52,9 +52,9 @@ class ProviderHealth:
         c.consecutive_failures += 1
         c.last_error = re.sub(r"https?://\S+", "<url>", str(error or ""))[:240]
 
-    def snapshot(self) -> Dict[str, Dict[str, Any]]:
+    def snapshot(self) -> dict[str, dict[str, Any]]:
         now = monotonic()
-        out: Dict[str, Dict[str, Any]] = {}
+        out: dict[str, dict[str, Any]] = {}
         for key, c in self._data.items():
             out[key] = {
                 "success": c.success,

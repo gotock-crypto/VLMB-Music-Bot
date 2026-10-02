@@ -4,62 +4,71 @@
 """
 
 import asyncio
-import logging
-import os
-import io
-import aiohttp
-import tempfile
-import shutil
-import re
-import time
-import html
-import math
-import signal
-import secrets
-import json
-from collections import OrderedDict
-import random
-import hashlib
 import functools
+import hashlib
+import html
+import io
+import json
+import logging
+import math
+import os
+import random
+import re
+import secrets
+import shutil
+import signal
+import tempfile
+import time
+from collections import OrderedDict
+
+import aiohttp
+
 try:
     import psutil
 except Exception:  # pragma: no cover
     psutil = None
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-from typing import Dict, List, Optional, Any, Set, Tuple
-from io import BytesIO
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-import redis.asyncio as redis
-import aiosqlite
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
 import aiofiles
 import aiofiles.os as async_os
+import aiosqlite
 import openpyxl
-from logging.handlers import RotatingFileHandler
-from concurrent.futures import ThreadPoolExecutor
-
+import redis.asyncio as redis
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, 
-    ReplyKeyboardMarkup
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
 )
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, ChatMemberHandler, filters, CallbackContext, ContextTypes
+    Application,
+    CallbackContext,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
 )
 from telegram.request import HTTPXRequest
-from telegram.error import TimedOut, NetworkError, RetryAfter, TelegramError, BadRequest
 
 import config
-from services.provider_health import ProviderHealth
-from services.provider_router import ProviderRouter, ProviderFailure
-from services.search_engine import rank_tracks as _rank_tracks
-from services.metrics import MetricsRegistry
+from providers import VKProviderAdapter, YandexProviderAdapter, YouTubeProviderAdapter
 from services.download_queue import DownloadQueue
+from services.metrics import MetricsRegistry
 from services.playlist_manager import PlaylistManager
-from services.search_scoring import rank_tracks_by_artist as _legacy_rank_tracks_by_artist
-from providers import YandexProviderAdapter, VKProviderAdapter, YouTubeProviderAdapter
+from services.provider_health import ProviderHealth
+from services.provider_router import ProviderRouter
+from services.search_engine import rank_tracks as _rank_tracks
 from storage import InMemoryUserStateStore
 
 # Импорт Яндекс.Музыки
@@ -167,7 +176,7 @@ _secret_filter = _SecretRedactionFilter()
 for _handler in logging.getLogger().handlers:
     _handler.addFilter(_secret_filter)
 
-_INSTANCE_LOCK_HANDLE: Optional[Any] = None
+_INSTANCE_LOCK_HANDLE: Any | None = None
 
 def acquire_single_instance_lock() -> bool:
     """Prevent two polling processes from using the same Telegram token."""
@@ -195,7 +204,7 @@ def acquire_single_instance_lock() -> bool:
         handle.flush()
         _INSTANCE_LOCK_HANDLE = handle
         return True
-    except (OSError, IOError):
+    except OSError:
         try:
             handle.close()
         except Exception:
@@ -230,7 +239,7 @@ def _utc_now() -> datetime:
     """Return naive UTC for backward-compatible SQLite ISO timestamps."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-def _process_memory_percent() -> Optional[float]:
+def _process_memory_percent() -> float | None:
     """Return process memory usage percentage when psutil is available."""
     if psutil is None:
         return None
@@ -379,7 +388,7 @@ _PRIVATE_MENU_ACTIONS = {
     "🆘 Помощь": "help",
 }
 
-def _private_menu_action(text: str) -> Optional[str]:
+def _private_menu_action(text: str) -> str | None:
     """Return a navigation action for a persistent private-chat menu label."""
     return _PRIVATE_MENU_ACTIONS.get((text or "").strip())
 
@@ -387,7 +396,6 @@ def _private_menu_action(text: str) -> Optional[str]:
 # ==================== КЛАСС ИСКЛЮЧЕНИЙ ====================
 class RateLimitExceeded(Exception):
     """Исключение при превышении лимитов запросов."""
-    pass
 
 
 class ProviderError(RuntimeError):
@@ -412,17 +420,17 @@ class TrackInfo:
     album: str
     duration_sec: int
     source: str = "vk"  # "vk", "ym", "yt"
-    vk_url: Optional[str] = None
-    ym_download_info: Optional[Any] = None
-    vk_key: Optional[str] = None
-    youtube_id: Optional[str] = None
-    youtube_url: Optional[str] = None
-    audio_ext: Optional[str] = None
-    track_obj: Optional[Any] = None
+    vk_url: str | None = None
+    ym_download_info: Any | None = None
+    vk_key: str | None = None
+    youtube_id: str | None = None
+    youtube_url: str | None = None
+    audio_ext: str | None = None
+    track_obj: Any | None = None
 
     # --- Normalized fields for stable routing / UX ---
-    uid: Optional[str] = None           # stable id across group/private (computed)
-    bitrate_kbps: Optional[int] = None  # best-effort; may be unknown
+    uid: str | None = None           # stable id across group/private (computed)
+    bitrate_kbps: int | None = None  # best-effort; may be unknown
 
     def _compute_uid(self) -> str:
         """Stable UID for routing & favorites/history.
@@ -487,7 +495,7 @@ class TrackInfo:
             raise KeyError(key)
         return v
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Конвертация в словарь для кэширования"""
         uid = self.ensure_uid()
         return {
@@ -509,7 +517,7 @@ class TrackInfo:
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'TrackInfo':
+    def from_dict(cls, data: dict[str, Any]) -> 'TrackInfo':
         """Создание из словаря"""
         ti = cls(
             idx=data['idx'],
@@ -726,12 +734,12 @@ class YandexMusicManager:
     def __init__(self):
         self.client = None  # sync client (fallback)
         self.client_async = None  # async client (preferred)
-        self.executor: Optional[ThreadPoolExecutor] = None
+        self.executor: ThreadPoolExecutor | None = None
         self._initialized = False
         self._use_async_client = False
 
         # cached bot username
-        self.bot_username: Optional[str] = None
+        self.bot_username: str | None = None
 
         # Global YM concurrency limiter (search + download)
         self._semaphore = asyncio.Semaphore(getattr(config, "YANDEX_CONCURRENCY", 4) or 4)
@@ -739,7 +747,7 @@ class YandexMusicManager:
         self._client_lock = asyncio.Lock()
 
         # Reuse a shared aiohttp session (set by AsyncMusicBot) to avoid per-download TCP/TLS overhead
-        self.http_session: Optional[aiohttp.ClientSession] = None
+        self.http_session: aiohttp.ClientSession | None = None
 
 
     async def initialize(self):
@@ -759,7 +767,7 @@ class YandexMusicManager:
         # 1) Try async client first
         try:
             if ClientAsync is not None:
-                self.client_async = ClientAsync(getattr(config, "YANDEX_TOKEN"))  # type: ignore
+                self.client_async = ClientAsync(config.YANDEX_TOKEN)  # type: ignore
                 await asyncio.wait_for(self.client_async.init(), timeout=int(getattr(config, "YM_SEARCH_TIMEOUT", 3)) + 3)
                 self.client = None
                 self._use_async_client = True
@@ -781,7 +789,7 @@ class YandexMusicManager:
             loop = asyncio.get_running_loop()
             self.client = await loop.run_in_executor(
                 self.executor,
-                lambda: Client(getattr(config, "YANDEX_TOKEN")).init()  # type: ignore
+                lambda: Client(config.YANDEX_TOKEN).init()  # type: ignore
             )
 
             if self.client:
@@ -823,7 +831,7 @@ class YandexMusicManager:
             logger.warning(f"YM get track error: {e}")
             return None
     
-    async def search_tracks(self, query: str, limit: int = 10) -> List[TrackInfo]:
+    async def search_tracks(self, query: str, limit: int = 10) -> list[TrackInfo]:
             """Асинхронный поиск треков в Яндекс.Музыке (устойчивый)."""
             if not self._initialized:
                 return []
@@ -854,7 +862,7 @@ class YandexMusicManager:
                     if not search_result:
                         return []
     
-                    tracks: List[TrackInfo] = []
+                    tracks: list[TrackInfo] = []
                     track_results = getattr(search_result, 'tracks', None)
                     if track_results:
                         results = getattr(track_results, 'results', [])[:limit]
@@ -911,7 +919,7 @@ class YandexMusicManager:
                     return []
 
 
-    async def get_track_download_info(self, track: TrackInfo) -> Optional[Any]:
+    async def get_track_download_info(self, track: TrackInfo) -> Any | None:
             """Получение информации для скачивания трека (DownloadInfo)."""
             if not self._initialized or track.source != "ym":
                 return None
@@ -1026,7 +1034,7 @@ class YandexMusicManager:
                 return False
 
 
-    async def download_track_bytes(self, track: TrackInfo) -> Optional[bytes]:
+    async def download_track_bytes(self, track: TrackInfo) -> bytes | None:
             """Скачать трек из Яндекс.Музыки в память (bytes).
 
             Цель: ускорить путь YM->Telegram, убрав tempfile->read() round-trip.
@@ -1151,7 +1159,7 @@ class YoutubeMusicManager:
 
     def __init__(self) -> None:
         self._initialized = False
-        self.executor: Optional[ThreadPoolExecutor] = None
+        self.executor: ThreadPoolExecutor | None = None
         concurrency = max(1, min(int(getattr(config, "YOUTUBE_CONCURRENCY", 2) or 2), 8))
         self._semaphore = asyncio.Semaphore(concurrency)
 
@@ -1171,9 +1179,9 @@ class YoutubeMusicManager:
         logger.info("✅ YouTube/yt-dlp источник инициализирован")
         return True
 
-    def _common_options(self) -> Dict[str, Any]:
+    def _common_options(self) -> dict[str, Any]:
         retries = max(0, min(int(getattr(config, "YOUTUBE_DOWNLOAD_RETRIES", 3) or 3), 10))
-        options: Dict[str, Any] = {
+        options: dict[str, Any] = {
             "quiet": True,
             "no_warnings": True,
             "logger": _YTDLPLogger(),
@@ -1196,7 +1204,7 @@ class YoutubeMusicManager:
         return options
 
     @staticmethod
-    def _artist_and_title(entry: Dict[str, Any]) -> Tuple[str, str]:
+    def _artist_and_title(entry: dict[str, Any]) -> tuple[str, str]:
         raw_title = str(entry.get("track") or entry.get("title") or "Неизвестный трек").strip()
         artist = str(
             entry.get("artist")
@@ -1217,7 +1225,7 @@ class YoutubeMusicManager:
         return artist or "YouTube", title or "Неизвестный трек"
 
     @staticmethod
-    def _entry_to_track(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _entry_to_track(entry: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(entry, dict):
             return None
         video_id = str(entry.get("id") or "").strip()
@@ -1248,7 +1256,7 @@ class YoutubeMusicManager:
             "audio_ext": None,
         }
 
-    def _search_sync(self, query: str, limit: int) -> List[Dict[str, Any]]:
+    def _search_sync(self, query: str, limit: int) -> list[dict[str, Any]]:
         if yt_dlp is None:
             return []
         options = self._common_options()
@@ -1266,7 +1274,7 @@ class YoutubeMusicManager:
         entries = info.get("entries") if isinstance(info, dict) else None
         if entries is None:
             entries = [info]
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         for entry in entries or []:
             track = self._entry_to_track(entry)
             if track is not None:
@@ -1275,7 +1283,7 @@ class YoutubeMusicManager:
                 break
         return results
 
-    async def search_tracks(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    async def search_tracks(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         if not self._initialized or not self.executor:
             return []
         query_clean = _normalize_user_query(query)
@@ -1297,7 +1305,7 @@ class YoutubeMusicManager:
                 return []
 
     @staticmethod
-    def _resolve_ffmpeg_location() -> Optional[str]:
+    def _resolve_ffmpeg_location() -> str | None:
         configured = str(getattr(config, "YOUTUBE_FFMPEG_LOCATION", "") or "").strip()
         if configured:
             if os.path.exists(configured) or shutil.which(configured):
@@ -1306,14 +1314,14 @@ class YoutubeMusicManager:
             return None
         return shutil.which("ffmpeg")
 
-    def _download_sync(self, track: Dict[str, Any]) -> Tuple[bytes, str]:
+    def _download_sync(self, track: dict[str, Any]) -> tuple[bytes, str]:
         temp_dir = tempfile.mkdtemp(prefix="youtube_audio_")
         try:
             return self._download_sync_in_dir(track, temp_dir)
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-    def _download_sync_in_dir(self, track: Dict[str, Any], temp_dir: str) -> Tuple[bytes, str]:
+    def _download_sync_in_dir(self, track: dict[str, Any], temp_dir: str) -> tuple[bytes, str]:
         if yt_dlp is None:
             raise RuntimeError("yt-dlp не установлен")
         target = str(track.get("youtube_url") or track.get("url") or "").strip()
@@ -1348,7 +1356,7 @@ class YoutubeMusicManager:
             info = ydl.extract_info(target, download=True)
             prepared = ydl.prepare_filename(info) if isinstance(info, dict) else ""
 
-        candidates: List[Path] = []
+        candidates: list[Path] = []
         if prepared:
             candidates.append(Path(prepared))
             if codec and ffmpeg_location:
@@ -1361,7 +1369,7 @@ class YoutubeMusicManager:
                         candidates.append(Path(str(filepath)))
         candidates.extend(sorted(Path(temp_dir).glob("*"), key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True))
 
-        chosen: Optional[Path] = None
+        chosen: Path | None = None
         for candidate in candidates:
             try:
                 if candidate.is_file() and candidate.suffix.lower() not in (".part", ".ytdl", ".json"):
@@ -1386,7 +1394,7 @@ class YoutubeMusicManager:
         data = chosen.read_bytes()
         return data, extension
 
-    async def download_track_bytes(self, track: Dict[str, Any]) -> Tuple[bytes, str]:
+    async def download_track_bytes(self, track: dict[str, Any]) -> tuple[bytes, str]:
         if not self._initialized or not self.executor:
             raise RuntimeError("YouTube источник не инициализирован")
         timeout = max(10.0, float(getattr(config, "YOUTUBE_DOWNLOAD_TIMEOUT", 180) or 180))
@@ -1415,7 +1423,7 @@ class AsyncCacheManager:
     def __init__(self):
         self.redis_client = None
         # LRU local cache: key -> (value, expires_at)
-        self.local_cache: 'OrderedDict[str, Tuple[Any, float]]' = OrderedDict()
+        self.local_cache: OrderedDict[str, tuple[Any, float]] = OrderedDict()
         self._local_max_items = int(getattr(config, 'ASYNC_CACHE_LOCAL_MAX_ITEMS', 5000) or 5000)
         self._hits = 0
         self._misses = 0
@@ -1447,7 +1455,7 @@ class AsyncCacheManager:
             logger.warning(f"Redis not available: {e}")
             self.redis_client = None
     
-    async def get(self, key: str) -> Optional[Any]:
+    async def get(self, key: str) -> Any | None:
         """Асинхронное получение данных из кэша"""
         if not key:
             return None
@@ -1501,13 +1509,13 @@ class AsyncCacheManager:
 
         def _make_jsonable(obj: Any):
             # TrackInfo / dataclass-like
-            if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
+            if hasattr(obj, "to_dict") and callable(obj.to_dict):
                 try:
                     return obj.to_dict()
                 except Exception:
                     pass
             # pydantic-like
-            if hasattr(obj, "model_dump") and callable(getattr(obj, "model_dump")):
+            if hasattr(obj, "model_dump") and callable(obj.model_dump):
                 try:
                     return obj.model_dump()
                 except Exception:
@@ -1565,17 +1573,17 @@ class AsyncCacheManager:
             except Exception as e:
                 logger.error(f"Redis delete error: {e}")
     
-    async def get_cached_results(self, query: str) -> Optional[List[Dict]]:
+    async def get_cached_results(self, query: str) -> list[dict] | None:
         """Получение кэшированных результатов поиска"""
         cache_key = _search_cache_key(query)
         return await self.get(cache_key)
     
-    async def set_cached_results(self, query: str, results: List[Dict]):
+    async def set_cached_results(self, query: str, results: list[dict]):
         """Сохранение результатов поиска в кэш"""
         cache_key = _search_cache_key(query)
         await self.set(cache_key, results)
     
-    def get_cache_stats(self) -> Dict[str, Any]:
+    def get_cache_stats(self) -> dict[str, Any]:
         """Статистика кэша для мониторинга"""
         total = self._hits + self._misses
         redis_total = self._redis_hits + self._redis_misses
@@ -1597,9 +1605,9 @@ class AsyncVKTokenManager:
     
     def __init__(self, db_path: str = config.VK_TOKENS_DB_PATH):
         self.db_path = db_path
-        self.active_tokens: Dict[str, Dict] = {}
+        self.active_tokens: dict[str, dict] = {}
         self._current_token_index = 0
-        self._last_usage_flush: Dict[str, float] = {}
+        self._last_usage_flush: dict[str, float] = {}
     
     async def initialize(self):
         """Инициализация базы данных токенов"""
@@ -1664,7 +1672,7 @@ class AsyncVKTokenManager:
             logger.warning("Invalid VK token expiration timestamp %r: %s", expires_at, exc)
             return False
     
-    async def get_next_valid_token(self) -> Optional[str]:
+    async def get_next_valid_token(self) -> str | None:
         """Получение следующего валидного токена (round-robin).
 
         - Основной источник: активные токены из vk_tokens.db
@@ -1761,7 +1769,7 @@ class AsyncVKTokenManager:
             logger.error(f"Error removing token: {e}")
             return False
     
-    async def list_tokens(self) -> List[Dict]:
+    async def list_tokens(self) -> list[dict]:
         """Получение списка всех токенов"""
         try:
             async with _sqlite_connection(self.db_path) as conn:
@@ -1802,7 +1810,7 @@ class AsyncLastFM:
         self._request_semaphore = asyncio.Semaphore(config.LASTFM_BATCH_SIZE)
         self._last_request_time = 0
     
-    async def _make_request(self, session: aiohttp.ClientSession, params: Dict) -> Optional[Dict]:
+    async def _make_request(self, session: aiohttp.ClientSession, params: dict) -> dict | None:
         """Асинхронный запрос к Last.fm API"""
         if not self.api_key:
             return None
@@ -1832,7 +1840,7 @@ class AsyncLastFM:
                 logger.error(f"Last.fm API error: {e}")
                 return None
     
-    async def get_top_tracks(self, session: aiohttp.ClientSession, limit: int = config.POPULAR_TRACKS_LIMIT) -> List[Dict[str, Any]]:
+    async def get_top_tracks(self, session: aiohttp.ClientSession, limit: int = config.POPULAR_TRACKS_LIMIT) -> list[dict[str, Any]]:
         """Получение популярных треков"""
         params = {
             'method': 'chart.gettoptracks',
@@ -1857,7 +1865,7 @@ class AsyncLastFM:
             return tracks
         return []
     
-    async def get_top_tracks_by_genre(self, session: aiohttp.ClientSession, genre: str, limit: int = config.POPULAR_TRACKS_LIMIT) -> List[Dict[str, Any]]:
+    async def get_top_tracks_by_genre(self, session: aiohttp.ClientSession, genre: str, limit: int = config.POPULAR_TRACKS_LIMIT) -> list[dict[str, Any]]:
         """Получение треков по жанру"""
         params = {
             'method': 'tag.gettoptracks',
@@ -1883,7 +1891,7 @@ class AsyncLastFM:
             return tracks
         return []
     
-    async def get_similar_artists(self, session: aiohttp.ClientSession, artist: str, limit: int = config.SIMILAR_ARTISTS_LIMIT) -> List[Dict[str, Any]]:
+    async def get_similar_artists(self, session: aiohttp.ClientSession, artist: str, limit: int = config.SIMILAR_ARTISTS_LIMIT) -> list[dict[str, Any]]:
         """Получение похожих исполнителей"""
         params = {
             'method': 'artist.getsimilar',
@@ -1949,7 +1957,7 @@ DEEZER_GENRES: "OrderedDict[int, str]" = OrderedDict([
     (169, "Соул и фанк"),
 ])
 
-DEEZER_GENRE_ALIASES: Dict[str, int] = {
+DEEZER_GENRE_ALIASES: dict[str, int] = {
     "global": 0,
     "all": 0,
     "pop": 132,
@@ -1971,7 +1979,7 @@ DEEZER_GENRE_ALIASES: Dict[str, int] = {
     "funk": 169,
 }
 
-DIGEST_SCHEDULES: Dict[str, Dict[str, Any]] = {
+DIGEST_SCHEDULES: dict[str, dict[str, Any]] = {
     # Legacy presets are kept so existing subscriptions continue to work.
     "d09": {"label": "Каждый день в 09:00", "kind": "daily", "hour": 9, "minute": 0},
     "d18": {"label": "Каждый день в 18:00", "kind": "daily", "hour": 18, "minute": 0},
@@ -1981,7 +1989,7 @@ DIGEST_SCHEDULES: Dict[str, Dict[str, Any]] = {
     "su12": {"label": "По воскресеньям в 12:00", "kind": "weekly", "weekday": 6, "hour": 12, "minute": 0},
 }
 
-DIGEST_WEEKDAYS: Tuple[Tuple[int, str, str], ...] = (
+DIGEST_WEEKDAYS: tuple[tuple[int, str, str], ...] = (
     (0, "Пн", "понедельник"),
     (1, "Вт", "вторник"),
     (2, "Ср", "среда"),
@@ -1991,22 +1999,22 @@ DIGEST_WEEKDAYS: Tuple[Tuple[int, str, str], ...] = (
     (6, "Вс", "воскресенье"),
 )
 
-_DIGEST_WIZARDS: Dict[Tuple[int, int], Dict[str, Any]] = {}
-_DIGEST_SEND_LOCKS: Dict[int, asyncio.Lock] = {}
-_DIGEST_SEND_LOCK_LAST_USED: Dict[int, float] = {}
-_USER_MIX_WIZARDS: Dict[Tuple[int, int], Dict[str, Any]] = {}
-_USER_MIX_RUNNING: Set[int] = set()
-_USER_MIX_CHAT_RUNNING: Set[int] = set()
+_DIGEST_WIZARDS: dict[tuple[int, int], dict[str, Any]] = {}
+_DIGEST_SEND_LOCKS: dict[int, asyncio.Lock] = {}
+_DIGEST_SEND_LOCK_LAST_USED: dict[int, float] = {}
+_USER_MIX_WIZARDS: dict[tuple[int, int], dict[str, Any]] = {}
+_USER_MIX_RUNNING: set[int] = set()
+_USER_MIX_CHAT_RUNNING: set[int] = set()
 
 
-def _user_mix_key(user_id: int, chat_id: int) -> Tuple[int, int]:
+def _user_mix_key(user_id: int, chat_id: int) -> tuple[int, int]:
     return int(user_id), int(chat_id)
 
 
 def _user_mix_history_id(user_id: int, chat_id: int) -> int:
     """Stable non-subscription ID for per-user, per-chat mix history."""
     raw = hashlib.blake2b(
-        f"{int(user_id)}:{int(chat_id)}".encode("utf-8"),
+        f"{int(user_id)}:{int(chat_id)}".encode(),
         digest_size=8,
     ).digest()
     # Keep the value inside SQLite's signed INTEGER range and far above real
@@ -2032,7 +2040,7 @@ def _digest_send_lock(subscription_id: int) -> asyncio.Lock:
     return lock
 
 
-def _cleanup_digest_send_locks(max_idle_seconds: Optional[float] = None) -> int:
+def _cleanup_digest_send_locks(max_idle_seconds: float | None = None) -> int:
     """Drop only idle, unlocked per-subscription locks."""
     if max_idle_seconds is None:
         max_idle_seconds = float(getattr(config, "DIGEST_LOCK_TTL", 3600) or 3600)
@@ -2065,7 +2073,7 @@ def _digest_timezone() -> Any:
         return timezone.utc
 
 
-def _digest_encode_schedule(days: Set[int], hour: int, minute: int) -> str:
+def _digest_encode_schedule(days: set[int], hour: int, minute: int) -> str:
     """Encode a custom weekday/time schedule into the existing TEXT column."""
     normalized = sorted({int(day) for day in days if 0 <= int(day) <= 6})
     if not normalized:
@@ -2075,7 +2083,7 @@ def _digest_encode_schedule(days: Set[int], hour: int, minute: int) -> str:
     return f"c|{','.join(str(day) for day in normalized)}|{int(hour):02d}:{int(minute):02d}"
 
 
-def _digest_parse_schedule(schedule_key: str) -> Tuple[Set[int], int, int]:
+def _digest_parse_schedule(schedule_key: str) -> tuple[set[int], int, int]:
     """Return weekdays, hour and minute for custom and legacy schedules."""
     key = str(schedule_key or "")
     if key.startswith("c|"):
@@ -2104,7 +2112,7 @@ def _digest_parse_schedule(schedule_key: str) -> Tuple[Set[int], int, int]:
     return days, int(spec.get("hour", 18)), int(spec.get("minute", 0))
 
 
-def _digest_next_run(schedule_key: str, from_ts: Optional[float] = None) -> float:
+def _digest_next_run(schedule_key: str, from_ts: float | None = None) -> float:
     """Return the next UTC timestamp for selected weekdays and local time."""
     days, hour, minute = _digest_parse_schedule(schedule_key)
     tz = _digest_timezone()
@@ -2131,13 +2139,13 @@ def _digest_normalize(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _digest_track_keys(artist: str, title: str) -> List[str]:
+def _digest_track_keys(artist: str, title: str) -> list[str]:
     artist_full = _digest_normalize(artist)
     artist_main = _digest_normalize(re.split(r"\s*(?:,|&|/| x )\s*", artist or "", maxsplit=1)[0])
     title_full = _digest_normalize(title)
     title_base_raw = re.sub(r"\s*[\(\[].*?[\)\]]\s*$", "", title or "").strip()
     title_base = _digest_normalize(title_base_raw)
-    keys: List[str] = []
+    keys: list[str] = []
     for a in (artist_full, artist_main):
         for t in (title_full, title_base):
             if a and t:
@@ -2155,7 +2163,7 @@ class AsyncDeezer:
         self.timeout = float(getattr(config, "DEEZER_TIMEOUT", 10) or 10)
         self._semaphore = asyncio.Semaphore(int(getattr(config, "DEEZER_CONCURRENCY", 4) or 4))
 
-    async def _get_json(self, session: aiohttp.ClientSession, path: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def _get_json(self, session: aiohttp.ClientSession, path: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         if session is None or session.closed:
             return None
         url = f"{self.base_url}/{path.lstrip('/')}"
@@ -2180,11 +2188,11 @@ class AsyncDeezer:
             logger.warning("Deezer API request failed: %s", exc)
         return None
 
-    async def get_chart_tracks(self, session: aiohttp.ClientSession, genre_id: int = 0, limit: int = 50) -> List[Dict[str, Any]]:
+    async def get_chart_tracks(self, session: aiohttp.ClientSession, genre_id: int = 0, limit: int = 50) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit or 50), 100))
         data = await self._get_json(session, f"chart/{int(genre_id)}/tracks", {"limit": limit})
         rows = (data or {}).get("data") or []
-        tracks: List[Dict[str, Any]] = []
+        tracks: list[dict[str, Any]] = []
         for item in rows:
             if not isinstance(item, dict):
                 continue
@@ -2208,7 +2216,7 @@ class AsyncDeezer:
 class SearchSession:
     """Сессия поиска пользователя"""
     
-    def __init__(self, session_id: str, user_id: int, query: str, results: List[Dict]):
+    def __init__(self, session_id: str, user_id: int, query: str, results: list[dict]):
         self.session_id = session_id
         self.user_id = user_id
         self.query = query
@@ -2222,9 +2230,9 @@ class SearchSession:
         self.last_accessed = time.time()
 
         # Stable track routing: uid -> track dict/TrackInfo
-        self.tracks_by_uid: Dict[str, Any] = {}
+        self.tracks_by_uid: dict[str, Any] = {}
         # Managed background enrich
-        self.enrich_task: Optional[asyncio.Task] = None
+        self.enrich_task: asyncio.Task | None = None
         self.enrich_cancel_event: asyncio.Event = asyncio.Event()
         # Download-all UX
         self.download_all_cancel: bool = False
@@ -2234,7 +2242,7 @@ class SearchSession:
 
     def reindex_tracks(self) -> None:
         """Build uid index for results and best_tracks (best-effort)."""
-        idx: Dict[str, Any] = {}
+        idx: dict[str, Any] = {}
         try:
             for t in (self.results or []):
                 uid = _track_uid_from_any(t)
@@ -2248,7 +2256,7 @@ class SearchSession:
             logger.debug(f"reindex_tracks failed: {e}")
         self.tracks_by_uid = idx
 
-    def get_track(self, ref: str, chat_type: Optional[str]) -> Optional[Any]:
+    def get_track(self, ref: str, chat_type: str | None) -> Any | None:
         """Resolve a track either by stable uid or (legacy) by integer index.
 
         In groups we typically index into best_tracks; in private into results.
@@ -2294,10 +2302,10 @@ class AsyncSessionManager:
     
     def __init__(self, cache_manager: Optional['AsyncCacheManager'] = None):
         self.cache_manager = cache_manager
-        self.sessions: Dict[str, SearchSession] = {}
+        self.sessions: dict[str, SearchSession] = {}
         self._cleanup_task = None
-        self._background_tasks: Set[asyncio.Task] = set()
-        self._session_access: Dict[str, float] = {}
+        self._background_tasks: set[asyncio.Task] = set()
+        self._session_access: dict[str, float] = {}
         self._lock = asyncio.Lock()
     
     async def initialize(self):
@@ -2356,7 +2364,7 @@ class AsyncSessionManager:
         except Exception as e:
             logger.debug(f"Redis session persist failed for {session.session_id}: {e}")
 
-    async def _load_session(self, session_id: str) -> Optional[SearchSession]:
+    async def _load_session(self, session_id: str) -> SearchSession | None:
         """Load session from Redis and rehydrate SearchSession."""
         if not self._redis_enabled():
             return None
@@ -2389,7 +2397,7 @@ class AsyncSessionManager:
         
         self._cleanup_task = self._spawn_task(cleanup_loop(), "session-cleanup")
     
-    async def create_session(self, user_id: int, query: str, results: List[Dict]) -> str:
+    async def create_session(self, user_id: int, query: str, results: list[dict]) -> str:
         """Create a session without holding the lock during Redis I/O."""
         async with self._lock:
             if len(self.sessions) >= int(getattr(config, "MAX_CACHED_SESSIONS", 2000) or 2000):
@@ -2404,7 +2412,7 @@ class AsyncSessionManager:
         await self._persist_session(session)
         return session_id
 
-    async def get_session(self, session_id: str) -> Optional[SearchSession]:
+    async def get_session(self, session_id: str) -> SearchSession | None:
         """Get a session without holding the global lock during Redis I/O."""
         async with self._lock:
             session = self.sessions.get(session_id)
@@ -2516,10 +2524,10 @@ class AsyncUserManager:
     """Асинхронный менеджер пользователей и лимитов"""
     
     def __init__(self):
-        self.banned_users: Set[int] = set()
-        self.requests: Dict[int, Dict[str, List[float]]] = {}
+        self.banned_users: set[int] = set()
+        self.requests: dict[int, dict[str, list[float]]] = {}
         self.limits = config.RATE_LIMITS
-        self.user_cooldowns: Dict[int, float] = {}
+        self.user_cooldowns: dict[int, float] = {}
         self._cleanup_task = None
         self._ban_refresh_lock = asyncio.Lock()
         self._last_ban_refresh = 0.0
@@ -2704,18 +2712,18 @@ class AsyncMusicBot:
     """Полностью асинхронный музыкальный бот с Яндекс.Музыкой"""
     
     def __init__(self):
-        self.user_sessions: Dict[int, Dict] = {}
+        self.user_sessions: dict[int, dict] = {}
         # Compatibility mirror for legacy handlers; persistence boundary lives in storage.
-        self.user_states: Dict[int, Dict] = {}
+        self.user_states: dict[int, dict] = {}
         self.state_store = InMemoryUserStateStore()
-        self.session: Optional[aiohttp.ClientSession] = None
+        self.session: aiohttp.ClientSession | None = None
         self._initialized = False
         
         
         # Telegram API caches (reduce latency in groups)
-        self._tg_me: Optional[Any] = None
+        self._tg_me: Any | None = None
         self._tg_me_ts: float = 0.0
-        self._tg_chat_member_cache: Dict[int, Any] = {}  # chat_id -> {"ts": float, "member": obj}
+        self._tg_chat_member_cache: dict[int, Any] = {}  # chat_id -> {"ts": float, "member": obj}
         # Инициализация асинхронных менеджеров
         self.user_manager = AsyncUserManager()
         self.cache = AsyncCacheManager()
@@ -2748,7 +2756,7 @@ class AsyncMusicBot:
         self.global_download_semaphore = asyncio.Semaphore(max(1, int(getattr(config, "GLOBAL_DOWNLOAD_LIMIT", 12) or 12)))
 
         # User data (favorites/history/prefs)
-        self.user_store: Optional[UserStore] = None
+        self.user_store: UserStore | None = None
         
         configured_downloads = max(1, int(getattr(config, "MAX_CONCURRENT_DOWNLOADS", 5) or 5))
         max_file_size = max(1, int(getattr(config, "MAX_FILE_SIZE", 50 * 1024 * 1024) or 50 * 1024 * 1024))
@@ -2769,17 +2777,17 @@ class AsyncMusicBot:
         self.audio_memory_semaphore = asyncio.Semaphore(self._download_concurrency)
         # Per-chat download concurrency limits (private/group).
         self._chat_download_semaphores = {}  # chat_id -> asyncio.Semaphore
-        self._chat_download_sem_last_used: Dict[int, float] = {}
-        self._chat_download_sem_limits: Dict[int, int] = {}
+        self._chat_download_sem_last_used: dict[int, float] = {}
+        self._chat_download_sem_limits: dict[int, int] = {}
         self._chat_download_limits_private = getattr(config, 'MAX_CONCURRENT_DOWNLOADS_PRIVATE', 4)
         self._chat_download_limits_group = getattr(config, 'MAX_CONCURRENT_DOWNLOADS_GROUP', 2)
-        self.background_tasks: Set[asyncio.Task] = set()
+        self.background_tasks: set[asyncio.Task] = set()
 
         # --- Excel warmup (admin) state ---
         # Users in this set requested cancel for current warmup run.
-        self.excel_warmup_cancel: Set[int] = set()
+        self.excel_warmup_cancel: set[int] = set()
         # Users currently running warmup (to prevent duplicates).
-        self.excel_warmup_processing: Set[int] = set()
+        self.excel_warmup_processing: set[int] = set()
         self._background_semaphore = asyncio.Semaphore(50)
         
         self._query_cache = {}
@@ -2790,12 +2798,12 @@ class AsyncMusicBot:
         self._last_user_activity = time.time()
 
         # --- TG file_id local LRU cache (fast-path, limits memory) ---
-        self._tg_file_id_lru: "OrderedDict[str, str]" = OrderedDict()
+        self._tg_file_id_lru: OrderedDict[str, str] = OrderedDict()
         self._tg_file_id_lru_max: int = int(getattr(config, "TG_FILE_ID_LOCAL_CACHE_MAX", 50000) or 50000)
         self._tg_file_id_lock = asyncio.Lock()
 
         # --- SQLite reuse for tg_audio_cache (reduces connect/close overhead) ---
-        self._tg_db_conn: Optional[aiosqlite.Connection] = None
+        self._tg_db_conn: aiosqlite.Connection | None = None
         self._tg_db_lock = asyncio.Lock()
 
         # --- Excel warmup concurrency limiter ---
@@ -2889,7 +2897,7 @@ class AsyncMusicBot:
         """
         # Lazy-init storage to stay backward compatible with older saved objects / hot reloads
         if not hasattr(self, "_chat_download_semaphores") or self._chat_download_semaphores is None:
-            self._chat_download_semaphores: Dict[int, asyncio.Semaphore] = {}
+            self._chat_download_semaphores: dict[int, asyncio.Semaphore] = {}
 
         sem = self._chat_download_semaphores.get(chat_id)
         if sem is not None:
@@ -2991,7 +2999,7 @@ class AsyncMusicBot:
             self._cache_cleanup,
         ]
         # Keepalive может быть отключён в конфиге или отсутствовать в сборке.
-        if hasattr(self, "_keepalive_loop") and callable(getattr(self, "_keepalive_loop")):
+        if hasattr(self, "_keepalive_loop") and callable(self._keepalive_loop):
             task_factories.append(self._keepalive_loop)
 
         for fn in task_factories:
@@ -3214,7 +3222,7 @@ class AsyncMusicBot:
             except Exception as e:
                 logger.debug(f"Keepalive loop error: {e}")
 
-    async def set_user_state(self, user_id: int, state: str, data: Dict = None):
+    async def set_user_state(self, user_id: int, state: str, data: dict = None):
         """Set state through the storage boundary while preserving legacy access."""
         payload = dict(data or {})
         await self.state_store.set(user_id, state, payload)
@@ -3222,7 +3230,7 @@ class AsyncMusicBot:
             'state': state, 'data': payload, 'timestamp': time.time()
         }
 
-    async def get_user_state(self, user_id: int) -> Optional[Dict]:
+    async def get_user_state(self, user_id: int) -> dict | None:
         """Get state through storage; keep the legacy timestamp contract."""
         state_data = await self.state_store.get(user_id)
         if not state_data:
@@ -3252,7 +3260,7 @@ class AsyncMusicBot:
         return q
 
     @classmethod
-    def rank_tracks_by_artist(cls, tracks: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    def rank_tracks_by_artist(cls, tracks: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
         """Production search ranking: relevance, artist/title match and deduplication."""
         return _rank_tracks(tracks, query)
     
@@ -3260,12 +3268,12 @@ class AsyncMusicBot:
     
 
     
-    async def find_best_tracks(self, songs: List[Dict[str, Any]], query: str, count: int = 5) -> List[Dict[str, Any]]:
+    async def find_best_tracks(self, songs: list[dict[str, Any]], query: str, count: int = 5) -> list[dict[str, Any]]:
         """Compatibility wrapper around the single artist-first ranking rule."""
         ranked = self.rank_tracks_by_artist(songs, query)
         return ranked[:max(0, int(count or 0))]
     
-    async def search_vk_music(self, query: str, count: int = 30) -> List[Dict[str, Any]]:
+    async def search_vk_music(self, query: str, count: int = 30) -> list[dict[str, Any]]:
         """Search VK without duration, word, bitrate, or quality filters."""
         await self.ensure_session()
         retries = max(1, min(int(getattr(config, "VK_SEARCH_RETRIES", 2) or 2), 5))
@@ -3369,14 +3377,14 @@ class AsyncMusicBot:
             raise
 
 
-    async def search_all_sources(self, query: str, limit: int = 30, preferred_source: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def search_all_sources(self, query: str, limit: int = 30, preferred_source: str | None = None) -> list[dict[str, Any]]:
         """Search enabled sources in parallel, apply failover/circuit-breaker, then rank."""
         started = time.perf_counter()
         requested = max(1, int(limit or 30))
         multiplier = max(1, int(getattr(config, "MERGE_LIMIT_MULTIPLIER", 2) or 2))
         fetch_limit = requested * multiplier
 
-        tasks: List[Tuple[str, asyncio.Task]] = []
+        tasks: list[tuple[str, asyncio.Task]] = []
         youtube_enabled = bool(
             getattr(config, "ENABLE_YOUTUBE_MUSIC", True) and self.youtube_music._initialized
         )
@@ -3399,7 +3407,7 @@ class AsyncMusicBot:
             return []
 
         gathered = await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
-        buckets: Dict[str, List[Dict[str, Any]]] = {"vk": [], "ym": [], "yt": []}
+        buckets: dict[str, list[dict[str, Any]]] = {"vk": [], "ym": [], "yt": []}
         for (source, _), result in zip(tasks, gathered):
             if isinstance(result, Exception):
                 logger.warning("%s search failed: %s", source.upper(), result)
@@ -3417,7 +3425,7 @@ class AsyncMusicBot:
         merged = [track for source in source_order for track in buckets[source]]
 
         # Remove only literal duplicates; this is not a relevance/quality criterion.
-        unique: List[Dict[str, Any]] = []
+        unique: list[dict[str, Any]] = []
         seen = set()
         for track in merged:
             identity = (
@@ -3434,7 +3442,7 @@ class AsyncMusicBot:
         result = self.rank_tracks_by_artist(unique, query)[:requested]
         await self.metrics.record("search", ok=bool(result), seconds=time.perf_counter() - started)
         return result
-    async def _search_yandex_music_adapted(self, query: str, limit: int) -> List[Dict[str, Any]]:
+    async def _search_yandex_music_adapted(self, query: str, limit: int) -> list[dict[str, Any]]:
         """Convert ordinary Yandex.Music search results to the bot's common schema."""
         try:
             tracks = await self.yandex_music.search_tracks(query, max(1, int(limit or 10)))
@@ -3459,7 +3467,7 @@ class AsyncMusicBot:
 
     @rate_limit("search")
     @validate_query
-    async def safe_search_vk_music(self, query: str, user_id: int, count: int = 30) -> List[Dict[str, Any]]:
+    async def safe_search_vk_music(self, query: str, user_id: int, count: int = 30) -> list[dict[str, Any]]:
         """Cached multi-source search with one final artist-first ordering."""
         cache_key = _search_cache_key(query)
         cached = self._query_cache.get(cache_key)
@@ -3548,18 +3556,18 @@ class AsyncMusicBot:
 
 
 
-    async def get_popular_tracks(self, limit: int = config.POPULAR_TRACKS_LIMIT) -> List[Dict[str, Any]]:
+    async def get_popular_tracks(self, limit: int = config.POPULAR_TRACKS_LIMIT) -> list[dict[str, Any]]:
         """Получение популярных треков из чарта Deezer."""
         await self.ensure_session()
         return await self.deezer.get_chart_tracks(self.session, 0, limit)
     
-    async def get_top_tracks_by_genre(self, genre: str, limit: int = config.POPULAR_TRACKS_LIMIT) -> List[Dict[str, Any]]:
+    async def get_top_tracks_by_genre(self, genre: str, limit: int = config.POPULAR_TRACKS_LIMIT) -> list[dict[str, Any]]:
         """Получение жанрового чарта Deezer."""
         await self.ensure_session()
         genre_id = DEEZER_GENRE_ALIASES.get(str(genre or "").casefold(), 0)
         return await self.deezer.get_chart_tracks(self.session, genre_id, limit)
     
-    async def get_similar_artists(self, artist: str, limit: int = config.SIMILAR_ARTISTS_LIMIT) -> List[Dict[str, Any]]:
+    async def get_similar_artists(self, artist: str, limit: int = config.SIMILAR_ARTISTS_LIMIT) -> list[dict[str, Any]]:
         """Получение похожих исполнителей"""
         if not self.lastfm:
             return []
@@ -3571,8 +3579,8 @@ class AsyncMusicBot:
         url: str,
         user_id: int,
         *,
-        timeout_s: Optional[float] = None,
-        retries: Optional[int] = None,
+        timeout_s: float | None = None,
+        retries: int | None = None,
     ) -> bytes:
         """Безопасная загрузка аудио с проверкой лимитов.
 
@@ -3587,8 +3595,8 @@ class AsyncMusicBot:
         self,
         url: str,
         *,
-        timeout_s: Optional[float] = None,
-        retries: Optional[int] = None,
+        timeout_s: float | None = None,
+        retries: int | None = None,
     ) -> bytes:
         """Загрузка аудиофайла (быстро + устойчиво).
 
@@ -3682,7 +3690,7 @@ class AsyncMusicBot:
 
     async def download_audio_any_source(
         self,
-        track_info: Dict[str, Any],
+        track_info: dict[str, Any],
         user_id: int,
         *,
         fast: bool = False,
@@ -3706,7 +3714,7 @@ class AsyncMusicBot:
                 ),
             )
 
-        async def _download_yt(track: Dict[str, Any]) -> bytes:
+        async def _download_yt(track: dict[str, Any]) -> bytes:
             if not getattr(config, "ENABLE_YOUTUBE_MUSIC", True) or not self.youtube_music._initialized:
                 raise RuntimeError("YouTube источник недоступен")
             async with self.download_semaphore:
@@ -3716,7 +3724,7 @@ class AsyncMusicBot:
             track_info['audio_ext'] = extension
             return data
 
-        async def _search_download_yt(query: str) -> Optional[bytes]:
+        async def _search_download_yt(query: str) -> bytes | None:
             if not getattr(config, "ENABLE_YOUTUBE_MUSIC", True) or not self.youtube_music._initialized:
                 return None
             tracks = await self.youtube_music.search_tracks(query, 1)
@@ -3726,7 +3734,7 @@ class AsyncMusicBot:
             track_info['audio_ext'] = tracks[0].get('audio_ext') or track_info.get('audio_ext')
             return data
 
-        async def _download_ym(track: Dict[str, Any]) -> Optional[bytes]:
+        async def _download_ym(track: dict[str, Any]) -> bytes | None:
             if not self.yandex_music._initialized:
                 return None
             ym_track = TrackInfo(
@@ -3941,7 +3949,7 @@ class AsyncMusicBot:
         s = re.sub(r"\s+", " ", s)
         return f"at:{s}"
     
-    def _tg_lru_get(self, key: str) -> Optional[str]:
+    def _tg_lru_get(self, key: str) -> str | None:
         if not key:
             return None
         try:
@@ -3968,12 +3976,12 @@ class AsyncMusicBot:
         except Exception:
             pass
 
-    async def peek_tg_file_id_local_bulk(self, items: List[Tuple[str, str, Optional[str]]]) -> Set[str]:
+    async def peek_tg_file_id_local_bulk(self, items: list[tuple[str, str, str | None]]) -> set[str]:
         """Fast local-only check whether we already have Telegram file_id in LRU.
 
         Returns a set of tg_query_key values that hit in local memory. No Redis/SQLite IO.
         """
-        keys: Set[str] = set()
+        keys: set[str] = set()
         if not items:
             return keys
         try:
@@ -4039,7 +4047,7 @@ class AsyncMusicBot:
         )
         await conn.commit()
 
-    async def get_tg_file_id(self, artist: str, title: str, vk_key: str = None) -> Optional[str]:
+    async def get_tg_file_id(self, artist: str, title: str, vk_key: str = None) -> str | None:
         """Получить сохранённый Telegram file_id для трека (по artist+title).
 
         Используется для мгновенной отдачи аудио из Telegram без повторного скачивания.
@@ -4105,9 +4113,9 @@ class AsyncMusicBot:
         artist: str,
         title: str,
         file_id: str,
-        unique_id: Optional[str] = None,
-        duration: Optional[int] = None,
-        vk_key: Optional[str] = None,
+        unique_id: str | None = None,
+        duration: int | None = None,
+        vk_key: str | None = None,
     ) -> None:
         """Сохранить Telegram file_id для трека (по artist+title)."""
         if not file_id:
@@ -4228,7 +4236,7 @@ class AsyncMusicBot:
                 pass
 
 # ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
-bot_instance: Optional[AsyncMusicBot] = None
+bot_instance: AsyncMusicBot | None = None
 
 
 async def get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -4250,7 +4258,7 @@ async def get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
     return username
 
 # ==================== ОБРАБОТЧИКИ ====================
-def _bot_identity_for_usage(context: CallbackContext) -> Tuple[int, str]:
+def _bot_identity_for_usage(context: CallbackContext) -> tuple[int, str]:
     bot = getattr(context, "bot", None)
     try:
         bot_id = int(getattr(bot, "id", 0) or 0)
@@ -4293,7 +4301,7 @@ def _group_message_uses_bot(message: Any, bot_id: int, bot_username: str) -> boo
     return bool(re.match(r"^найти(?:\s+|$)", text, re.IGNORECASE))
 
 
-def _unique_usage_context(update: Update, context: CallbackContext) -> Optional[str]:
+def _unique_usage_context(update: Update, context: CallbackContext) -> str | None:
     user = getattr(update, "effective_user", None)
     if not user or bool(getattr(user, "is_bot", False)):
         return None
@@ -4394,7 +4402,7 @@ async def user_check(update: Update, enforce_cooldown: bool = True) -> bool:
 
     return True
 
-def _favorite_deep_link_uid(track: Dict[str, Any]) -> Optional[str]:
+def _favorite_deep_link_uid(track: dict[str, Any]) -> str | None:
     """Return the exact stable track UID for Telegram callback_data.
 
     This is no longer a deep-link payload. Callback data may contain ':' and
@@ -4411,7 +4419,7 @@ def _favorite_deep_link_uid(track: Dict[str, Any]) -> Optional[str]:
         return None
 
 
-async def _favorite_reply_markup(context: CallbackContext, track: Dict[str, Any]) -> Optional[InlineKeyboardMarkup]:
+async def _favorite_reply_markup(context: CallbackContext, track: dict[str, Any]) -> InlineKeyboardMarkup | None:
     """Build a native Telegram callback button for a downloaded track.
 
     Do not use a t.me deep-link here: Telegram Desktop can open the bot with
@@ -4434,7 +4442,7 @@ async def _favorite_reply_markup(context: CallbackContext, track: Dict[str, Any]
         return None
 
 
-async def download_and_send_audio(update: Update, context: CallbackContext, message, track: Dict, original_message_id: int = None) -> bool:
+async def download_and_send_audio(update: Update, context: CallbackContext, message, track: dict, original_message_id: int = None) -> bool:
     """Download and send a track; return whether Telegram delivery succeeded."""
     user_id = update.effective_user.id if update and update.effective_user else message.from_user.id
     loading_message = None
@@ -4691,7 +4699,7 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
         return True
 
     except RateLimitExceeded as e:
-        error_msg = f"❌ <b>Слишком частые загрузки</b>\n{str(e)}"
+        error_msg = f"❌ <b>Слишком частые загрузки</b>\n{e!s}"
         await safe_answer_callback(getattr(update, 'callback_query', None), error_msg, show_alert=True)
         return False
     except Exception as e:
@@ -4904,7 +4912,7 @@ async def show_songs_page(update: Update, context: CallbackContext, message, use
 
     keyboard_rows = []
     # Fast local-only check for Telegram file_id cache (to show ⚡ and enable fileID-first UX)
-    local_fileid_keys: Set[str] = set()
+    local_fileid_keys: set[str] = set()
     try:
         peek_items = [((s.get('artist') or ''), (s.get('title') or ''), s.get('vk_key')) for s in (current_songs or [])]
         local_fileid_keys = await bot_instance.peek_tg_file_id_local_bulk(peek_items)
@@ -5000,7 +5008,7 @@ async def handle_download_callback(update: Update, context: CallbackContext, que
 
 
 
-async def handle_direct_user_track_download(update: Update, context: CallbackContext, query, track: Dict[str, Any]) -> None:
+async def handle_direct_user_track_download(update: Update, context: CallbackContext, query, track: dict[str, Any]) -> None:
     """Download a track dict from favorites/history (no session)."""
     try:
         await safe_answer_callback(query, "⬇️ Загружаю...", show_alert=False)
@@ -6259,13 +6267,13 @@ class AdminDB:
         self.db_path = db_path
         self._write_lock = asyncio.Lock()
         # Bounded write-throttle cache. SQLite remains the source of truth.
-        self._user_usage_cache: "OrderedDict[Tuple[int, str], float]" = OrderedDict()
+        self._user_usage_cache: OrderedDict[tuple[int, str], float] = OrderedDict()
 
     @staticmethod
     def _quote_identifier(name: str) -> str:
         return '"' + str(name).replace('"', '""') + '"'
 
-    async def _table_columns(self, conn: Any, table: str) -> Set[str]:
+    async def _table_columns(self, conn: Any, table: str) -> set[str]:
         """Return columns only after verifying the table through sqlite_master."""
         cur = await conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -6282,7 +6290,7 @@ class AdminDB:
         return {str(row[1]) for row in rows if len(row) > 1 and row[1]}
 
     @staticmethod
-    def _usage_timestamp_columns(columns: Set[str]) -> Tuple[Optional[str], Optional[str]]:
+    def _usage_timestamp_columns(columns: set[str]) -> tuple[str | None, str | None]:
         first = next((name for name in ("first_seen", "created_at", "ts", "last_seen") if name in columns), None)
         last = next((name for name in ("last_seen", "ts", "created_at", "first_seen") if name in columns), None)
         return first, last
@@ -6295,14 +6303,14 @@ class AdminDB:
         )
         tables = [str(row[0]) for row in await cur.fetchall() if row and row[0]]
         await cur.close()
-        table_columns: Dict[str, Set[str]] = {}
+        table_columns: dict[str, set[str]] = {}
         for table in tables:
             table_columns[table] = await self._table_columns(conn, table)
 
-        recovered: Dict[Tuple[int, str], Tuple[str, str]] = {}
+        recovered: dict[tuple[int, str], tuple[str, str]] = {}
         fallback_ts = _utc_now().isoformat()
 
-        def merge_rows(rows: List[Any]) -> None:
+        def merge_rows(rows: list[Any]) -> None:
             for row in rows:
                 if not row or len(row) < 4:
                     continue
@@ -6588,7 +6596,7 @@ class AdminDB:
             logger.exception("Failed to record unique user usage")
             return False
 
-    async def get_unique_user_counts(self, conn: Any = None) -> Tuple[int, int, int]:
+    async def get_unique_user_counts(self, conn: Any = None) -> tuple[int, int, int]:
         """Return all-time private, group and de-duplicated total user counts."""
         owns_connection = conn is None
         db = conn
@@ -6651,10 +6659,10 @@ class AdminDB:
                 "source_priority",
                 getattr(config, "SOURCE_PRIORITY", "vk_first"),
             )  # fastest|ym|vk|yt|yandex_first|vk_first|youtube_first
-            setattr(config, "ENABLE_YANDEX_MUSIC", bool(enable_ym))
-            setattr(config, "ENABLE_VK_MUSIC", bool(enable_vk))
-            setattr(config, "ENABLE_YOUTUBE_MUSIC", bool(enable_yt))
-            setattr(config, "SOURCE_PRIORITY", priority)
+            config.ENABLE_YANDEX_MUSIC = bool(enable_ym)
+            config.ENABLE_VK_MUSIC = bool(enable_vk)
+            config.ENABLE_YOUTUBE_MUSIC = bool(enable_yt)
+            config.SOURCE_PRIORITY = priority
         except Exception as e:
             logger.warning(f"AdminDB apply settings failed: {e}")
 
@@ -6782,7 +6790,7 @@ class AdminDB:
             await cur.close()
         return int(row[0] if row and row[0] is not None else 0)
 
-    async def get_group_chat_ids(self, active_only: bool = True) -> List[int]:
+    async def get_group_chat_ids(self, active_only: bool = True) -> list[int]:
         where = "WHERE chat_type IN ('group','supergroup')"
         if active_only:
             where += " AND COALESCE(bot_status,'') NOT IN ('left','kicked')"
@@ -6797,7 +6805,7 @@ class AdminDB:
         active_only: bool = True,
         limit: int = 10,
         offset: int = 0,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         where = "WHERE chat_type IN ('group','supergroup')"
         if active_only:
             where += " AND COALESCE(bot_status,'') NOT IN ('left','kicked')"
@@ -6823,7 +6831,7 @@ class AdminDB:
             for row in rows
         ]
 
-    async def get_group_chat(self, chat_id: int) -> Optional[Dict[str, Any]]:
+    async def get_group_chat(self, chat_id: int) -> dict[str, Any] | None:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT chat_id,chat_type,title,username,bot_is_admin,bot_status,can_send_messages,last_seen "
@@ -6845,7 +6853,7 @@ class AdminDB:
             "last_seen": row[7] or "",
         }
 
-    async def get_chat_ids(self, target: str = "all") -> List[int]:
+    async def get_chat_ids(self, target: str = "all") -> list[int]:
         """target: all|private|groups"""
         where = ""
         if target == "private":
@@ -6858,7 +6866,7 @@ class AdminDB:
             await cur.close()
         return [int(r[0]) for r in rows]
 
-    async def get_admin_chat_ids(self) -> List[int]:
+    async def get_admin_chat_ids(self) -> list[int]:
         """Чаты/каналы, где бот зафиксирован админом."""
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -6868,7 +6876,7 @@ class AdminDB:
             await cur.close()
         return [int(r[0]) for r in rows]
 
-    async def export_admin_chats_rows(self) -> List[Dict[str, Any]]:
+    async def export_admin_chats_rows(self) -> list[dict[str, Any]]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT chat_id, chat_type, title, username, bot_is_admin, bot_status, can_post_messages, can_send_messages, last_seen "
@@ -6932,14 +6940,14 @@ class AdminDB:
         except Exception:
             logger.exception("Failed to save user phone")
 
-    async def get_user_ids(self) -> List[int]:
+    async def get_user_ids(self) -> list[int]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute("SELECT user_id FROM users ORDER BY last_seen DESC")
             rows = await cur.fetchall()
             await cur.close()
         return [int(r[0]) for r in rows]
 
-    async def get_user(self, user_id: int) -> Optional[Dict[str, Any]]:
+    async def get_user(self, user_id: int) -> dict[str, Any] | None:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT user_id,first_name,last_name,username,last_seen FROM users WHERE user_id=?",
@@ -6964,7 +6972,7 @@ class AdminDB:
             await cur.close()
         return int(row[0] if row and row[0] is not None else 0)
 
-    async def export_users_rows(self) -> List[Dict[str, Any]]:
+    async def export_users_rows(self) -> list[dict[str, Any]]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT user_id, first_name, last_name, username, phone, created_at, last_seen "
@@ -7014,14 +7022,14 @@ class AdminDB:
                 await conn.commit()
         return changed
 
-    async def get_banned_user_ids(self) -> Set[int]:
+    async def get_banned_user_ids(self) -> set[int]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute("SELECT user_id FROM bans")
             rows = await cur.fetchall()
             await cur.close()
         return {int(row[0]) for row in rows}
 
-    async def list_bans(self, limit: int = 50) -> List[Dict[str, Any]]:
+    async def list_bans(self, limit: int = 50) -> list[dict[str, Any]]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT user_id, reason, banned_by, banned_at FROM bans ORDER BY banned_at DESC LIMIT ?",
@@ -7186,7 +7194,7 @@ class AdminDB:
         except Exception:
             logger.exception("Failed to log user action %s for user %s", action, user_id)
 
-    async def export_user_actions_rows(self, days: int = 7, limit: int = 200000) -> List[Dict[str, Any]]:
+    async def export_user_actions_rows(self, days: int = 7, limit: int = 200000) -> list[dict[str, Any]]:
         """Экспорт действий за последние N дней (для Excel)."""
         try:
             since = (_utc_now() - timedelta(days=max(1, int(days or 1)))).isoformat()
@@ -7208,7 +7216,7 @@ class AdminDB:
             rows = await cur.fetchall()
             await cur.close()
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for r in rows:
             out.append({
                 "ts": r[0] or "",
@@ -7223,7 +7231,7 @@ class AdminDB:
         return out
 
 
-    async def get_stats(self, days: int = 7) -> List[Dict[str, Any]]:
+    async def get_stats(self, days: int = 7) -> list[dict[str, Any]]:
         start_day = (_utc_now().date() - timedelta(days=max(days, 1)-1)).isoformat()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -7240,7 +7248,7 @@ class AdminDB:
             })
         return out
 
-    async def get_broadcast_stats(self, days: int = 7) -> Dict[str, int]:
+    async def get_broadcast_stats(self, days: int = 7) -> dict[str, int]:
         since = (_utc_now() - timedelta(days=max(1, int(days or 1)))).isoformat()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -7268,7 +7276,7 @@ class GroupDigestStore:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._audio_index: Dict[str, Dict[str, Any]] = {}
+        self._audio_index: dict[str, dict[str, Any]] = {}
         self._audio_index_ts = 0.0
         self._audio_index_lock = asyncio.Lock()
 
@@ -7313,7 +7321,7 @@ class GroupDigestStore:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_digest_sent_at ON group_digest_sent_tracks(sent_at)")
             await conn.commit()
 
-    async def remember_topic(self, chat_id: int, thread_id: Optional[int], title: Optional[str] = None) -> None:
+    async def remember_topic(self, chat_id: int, thread_id: int | None, title: str | None = None) -> None:
         if not thread_id:
             return
         supplied_title = bool((title or "").strip())
@@ -7333,7 +7341,7 @@ class GroupDigestStore:
                 )
             await conn.commit()
 
-    async def list_topics(self, chat_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    async def list_topics(self, chat_id: int, limit: int = 20) -> list[dict[str, Any]]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT thread_id,title,last_seen FROM group_topics WHERE chat_id=? ORDER BY last_seen DESC LIMIT ?",
@@ -7369,7 +7377,7 @@ class GroupDigestStore:
             return int(cur.lastrowid)
 
     @staticmethod
-    def _row_to_subscription(row: Any) -> Dict[str, Any]:
+    def _row_to_subscription(row: Any) -> dict[str, Any]:
         return {
             "id": int(row[0]), "chat_id": int(row[1]), "thread_id": int(row[2] or 0),
             "genre_id": int(row[3]), "genre_name": row[4] or "Все жанры",
@@ -7378,7 +7386,7 @@ class GroupDigestStore:
             "next_run_at": float(row[9] or 0), "last_run_at": float(row[10] or 0),
         }
 
-    async def list_subscriptions(self, chat_id: int) -> List[Dict[str, Any]]:
+    async def list_subscriptions(self, chat_id: int) -> list[dict[str, Any]]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT id,chat_id,thread_id,genre_id,genre_name,schedule_key,track_count,enabled,created_by,next_run_at,last_run_at "
@@ -7389,12 +7397,12 @@ class GroupDigestStore:
             await cur.close()
         return [self._row_to_subscription(r) for r in rows]
 
-    async def get_subscription(self, subscription_id: int, chat_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    async def get_subscription(self, subscription_id: int, chat_id: int | None = None) -> dict[str, Any] | None:
         sql = (
             "SELECT id,chat_id,thread_id,genre_id,genre_name,schedule_key,track_count,enabled,created_by,next_run_at,last_run_at "
             "FROM group_digest_subscriptions WHERE id=?"
         )
-        args: List[Any] = [int(subscription_id)]
+        args: list[Any] = [int(subscription_id)]
         if chat_id is not None:
             sql += " AND chat_id=?"
             args.append(int(chat_id))
@@ -7431,7 +7439,7 @@ class GroupDigestStore:
             await conn.commit()
             return int(cur.rowcount or 0) > 0
 
-    async def toggle_enabled(self, subscription_id: int, chat_id: int) -> Optional[bool]:
+    async def toggle_enabled(self, subscription_id: int, chat_id: int) -> bool | None:
         sub = await self.get_subscription(subscription_id, chat_id)
         if not sub:
             return None
@@ -7455,7 +7463,7 @@ class GroupDigestStore:
             await conn.commit()
             return int(cur.rowcount or 0) > 0
 
-    async def get_due_subscriptions(self, now_ts: float, limit: int = 20) -> List[Dict[str, Any]]:
+    async def get_due_subscriptions(self, now_ts: float, limit: int = 20) -> list[dict[str, Any]]:
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
                 "SELECT id,chat_id,thread_id,genre_id,genre_name,schedule_key,track_count,enabled,created_by,next_run_at,last_run_at "
@@ -7466,7 +7474,7 @@ class GroupDigestStore:
             await cur.close()
         return [self._row_to_subscription(r) for r in rows]
 
-    async def mark_run(self, subscription_id: int, schedule_key: str, last_run_at: Optional[float] = None) -> None:
+    async def mark_run(self, subscription_id: int, schedule_key: str, last_run_at: float | None = None) -> None:
         run_ts = float(last_run_at or time.time())
         async with _sqlite_connection(self.db_path) as conn:
             await conn.execute(
@@ -7475,7 +7483,7 @@ class GroupDigestStore:
             )
             await conn.commit()
 
-    async def get_recent_sent_keys(self, subscription_id: int, days: Optional[int] = None) -> Set[str]:
+    async def get_recent_sent_keys(self, subscription_id: int, days: int | None = None) -> set[str]:
         """Return all identities blocked by the no-repeat window."""
         keep_days = _digest_no_repeat_days() if days is None else max(1, int(days))
         since = time.time() - keep_days * 86400
@@ -7488,7 +7496,7 @@ class GroupDigestStore:
             await cur.close()
         return {str(r[0]) for r in rows if r and r[0]}
 
-    async def record_sent_many(self, subscription_id: int, track_keys: List[str]) -> None:
+    async def record_sent_many(self, subscription_id: int, track_keys: list[str]) -> None:
         """Remember every available identity of a sent track in one transaction."""
         keys = list(dict.fromkeys(str(key) for key in (track_keys or []) if key))
         if not keys:
@@ -7514,7 +7522,7 @@ class GroupDigestStore:
             await conn.commit()
         self._audio_index_ts = 0.0
 
-    async def cached_audio_index(self, force: bool = False) -> Dict[str, Dict[str, Any]]:
+    async def cached_audio_index(self, force: bool = False) -> dict[str, dict[str, Any]]:
         ttl = int(getattr(config, "DIGEST_AUDIO_INDEX_TTL", 300) or 300)
         if not force and self._audio_index and time.time() - self._audio_index_ts < ttl:
             return self._audio_index
@@ -7533,7 +7541,7 @@ class GroupDigestStore:
                     await cur.close()
                 except Exception:
                     rows = []
-            index: Dict[str, Dict[str, Any]] = {}
+            index: dict[str, dict[str, Any]] = {}
             for query_key, file_id, artist, title, duration, created_at in rows:
                 item = {
                     "query_key": query_key, "file_id": file_id, "artist": artist or "",
@@ -7655,7 +7663,7 @@ class UserStore:
             return json.dumps({'uid': _track_uid_from_any(track)}, ensure_ascii=False)
 
     @staticmethod
-    def _load_track(track_json: str) -> Dict[str, Any]:
+    def _load_track(track_json: str) -> dict[str, Any]:
         try:
             d = json.loads(track_json or "{}")
             if isinstance(d, dict):
@@ -7664,7 +7672,7 @@ class UserStore:
             pass
         return {}
 
-    async def get_preferences(self, user_id: int) -> Dict[str, Any]:
+    async def get_preferences(self, user_id: int) -> dict[str, Any]:
         await self.init()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -7718,7 +7726,7 @@ class UserStore:
             )
             await conn.commit()
 
-    async def list_history(self, user_id: int, limit: int = 30) -> List[Dict[str, Any]]:
+    async def list_history(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
         await self.init()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -7729,7 +7737,7 @@ class UserStore:
             await cur.close()
         return [self._load_track(r[0]) for r in (rows or [])]
 
-    async def get_history_track(self, user_id: int, uid: str) -> Optional[Dict[str, Any]]:
+    async def get_history_track(self, user_id: int, uid: str) -> dict[str, Any] | None:
         await self.init()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -7773,7 +7781,7 @@ class UserStore:
             )
             await conn.commit()
 
-    async def get_pending_favorite(self, user_id: int, max_age_seconds: int = 300) -> Optional[Dict[str, Any]]:
+    async def get_pending_favorite(self, user_id: int, max_age_seconds: int = 300) -> dict[str, Any] | None:
         """Consume a recent pending favorite created by a successful download."""
         await self.init()
         now = time.time()
@@ -7816,7 +7824,7 @@ class UserStore:
             await cur.close()
         return bool(row)
 
-    async def list_favorites(self, user_id: int, limit: int = 30) -> List[Dict[str, Any]]:
+    async def list_favorites(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
         await self.init()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -7827,7 +7835,7 @@ class UserStore:
             await cur.close()
         return [self._load_track(r[0]) for r in (rows or [])]
 
-    async def get_favorite(self, user_id: int, uid: str) -> Optional[Dict[str, Any]]:
+    async def get_favorite(self, user_id: int, uid: str) -> dict[str, Any] | None:
         await self.init()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -7850,7 +7858,7 @@ class UserStore:
             )
             await conn.commit()
 
-    async def get_last(self, user_id: int) -> Optional[Dict[str, Any]]:
+    async def get_last(self, user_id: int) -> dict[str, Any] | None:
         await self.init()
         async with _sqlite_connection(self.db_path) as conn:
             cur = await conn.execute(
@@ -8027,7 +8035,7 @@ def _kb_back_to_admin():
 def _fmt_onoff(v: Any) -> str:
     return "✅ ВКЛ" if bool(v) else "❌ ВЫКЛ"
 
-def _safe_int(s: str) -> Optional[int]:
+def _safe_int(s: str) -> int | None:
     try:
         return int(str(s).strip())
     except Exception:
@@ -8036,7 +8044,7 @@ def _safe_int(s: str) -> Optional[int]:
 async def _show_admin_stats(query, days: int = 7):
     await safe_answer_callback(query)
     try:
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         if hasattr(bot_instance, "admin_db") and bot_instance.admin_db:
             rows = await bot_instance.admin_db.get_stats(days=days)
 
@@ -8209,7 +8217,7 @@ async def _handle_admin_export(update: Update, context: CallbackContext, kind: s
 async def _show_admin_monitor(query):
     await safe_answer_callback(query)
     try:
-        cache_stats: Dict[str, Any] = {}
+        cache_stats: dict[str, Any] = {}
         try:
             cache_stats = bot_instance.cache.get_cache_stats() if hasattr(bot_instance, "cache") else {}
         except Exception:
@@ -8516,7 +8524,7 @@ async def _handle_admin_moderation_action(query, action: str):
     else:
         await _show_admin_moderation(query)
 
-async def _handle_ban_input(update: Update, context: CallbackContext, state_data: Dict[str, Any]):
+async def _handle_ban_input(update: Update, context: CallbackContext, state_data: dict[str, Any]):
     user_id = update.effective_user.id
     if not _is_admin(user_id):
         return
@@ -8536,7 +8544,7 @@ async def _handle_ban_input(update: Update, context: CallbackContext, state_data
     finally:
         await bot_instance.clear_user_state(user_id)
 
-async def _handle_unban_input(update: Update, context: CallbackContext, state_data: Dict[str, Any]):
+async def _handle_unban_input(update: Update, context: CallbackContext, state_data: dict[str, Any]):
     user_id = update.effective_user.id
     if not _is_admin(user_id):
         return
@@ -8582,7 +8590,7 @@ async def _show_admin_groups(query, page: int = 0):
         "Нажмите на группу, чтобы подготовить сообщение.",
         "",
     ]
-    rows: List[List[InlineKeyboardButton]] = []
+    rows: list[list[InlineKeyboardButton]] = []
     for index, group in enumerate(groups, start=page * page_size + 1):
         chat_id = int(group.get("chat_id") or 0)
         title = str(group.get("title") or group.get("username") or chat_id)
@@ -8608,7 +8616,7 @@ async def _show_admin_groups(query, page: int = 0):
     if not groups:
         lines.append("— активные группы пока не зафиксированы —")
 
-    nav: List[InlineKeyboardButton] = []
+    nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(InlineKeyboardButton("⬅️", callback_data=f"admin_groups:{page - 1}"))
     if page < max_page:
@@ -8744,7 +8752,7 @@ async def _handle_admin_broadcast_action(query, action: str, context: CallbackCo
 async def _handle_broadcast_target_input(
     update: Update,
     context: CallbackContext,
-    state_data: Dict[str, Any],
+    state_data: dict[str, Any],
 ) -> None:
     user_id = update.effective_user.id
     if not _is_admin(user_id):
@@ -8822,7 +8830,7 @@ async def _send_broadcast_text(bot: Any, chat_id: int, html_text: str, plain_tex
         )
 
 
-async def _handle_broadcast_text(update: Update, context: CallbackContext, state_data: Dict[str, Any]):
+async def _handle_broadcast_text(update: Update, context: CallbackContext, state_data: dict[str, Any]):
     user_id = update.effective_user.id
     if not _is_admin(user_id):
         return
@@ -8862,7 +8870,7 @@ async def _handle_broadcast_text(update: Update, context: CallbackContext, state
 
     ok = 0
     fail = 0
-    failed_ids: List[int] = []
+    failed_ids: list[int] = []
     await message.reply_text(
         f"📣 Начинаю отправку: <b>{len(targets)}</b> получателей ({label})…",
         parse_mode="HTML",
@@ -8949,11 +8957,11 @@ async def observe_group_topic(update: Update, context: CallbackContext) -> None:
         logger.debug("Topic observation failed", exc_info=True)
 
 
-def _digest_wizard_key(user_id: int, chat_id: int) -> Tuple[int, int]:
+def _digest_wizard_key(user_id: int, chat_id: int) -> tuple[int, int]:
     return int(user_id), int(chat_id)
 
 
-def _digest_destination_label(thread_id: int, topics: Optional[List[Dict[str, Any]]] = None) -> str:
+def _digest_destination_label(thread_id: int, topics: list[dict[str, Any]] | None = None) -> str:
     if not thread_id:
         return "Основной чат"
     for topic in topics or []:
@@ -8981,8 +8989,8 @@ def _digest_schedule_label(schedule_key: str) -> str:
 
 
 def _user_mix_genre_keyboard() -> InlineKeyboardMarkup:
-    rows: List[List[InlineKeyboardButton]] = []
-    row: List[InlineKeyboardButton] = []
+    rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
     for genre_id, genre_name in DEEZER_GENRES.items():
         row.append(InlineKeyboardButton(genre_name, callback_data=f"mix:genre:{genre_id}"))
         if len(row) == 2:
@@ -9067,13 +9075,13 @@ async def user_mix_command(update: Update, context: CallbackContext) -> None:
     await _open_user_mix(update, context, check_access=True)
 
 
-async def _run_user_mix(application: Application, subscription: Dict[str, Any]) -> None:
+async def _run_user_mix(application: Application, subscription: dict[str, Any]) -> None:
     history_id = int(subscription["id"])
     chat_id = int(subscription["chat_id"])
     try:
         result = await send_group_digest(application, subscription, manual=False)
         if not result.get("ok") and not result.get("notified"):
-            kwargs: Dict[str, Any] = {
+            kwargs: dict[str, Any] = {
                 "chat_id": int(subscription["chat_id"]),
                 "text": "⚠️ Подборка не отправлена: " + str(
                     result.get("reason") or "нет подходящих треков"
@@ -9294,11 +9302,11 @@ async def digest_command(update: Update, context: CallbackContext) -> None:
     await _render_digest_home(update, context, edit=False)
 
 
-async def _render_digest_destinations(query: Any, context: CallbackContext, state: Dict[str, Any]) -> None:
+async def _render_digest_destinations(query: Any, context: CallbackContext, state: dict[str, Any]) -> None:
     chat_id = int(state["chat_id"])
     topics = await bot_instance.digest_store.list_topics(chat_id, limit=12)
     current_thread = int(state.get("current_thread_id") or 0)
-    rows: List[List[InlineKeyboardButton]] = [
+    rows: list[list[InlineKeyboardButton]] = [
         [InlineKeyboardButton("💬 Основной чат", callback_data="digest:dest:0")]
     ]
     if current_thread:
@@ -9324,7 +9332,7 @@ async def _render_digest_destinations(query: Any, context: CallbackContext, stat
 
 
 async def _render_digest_genres(query: Any) -> None:
-    rows: List[List[InlineKeyboardButton]] = []
+    rows: list[list[InlineKeyboardButton]] = []
     items = list(DEEZER_GENRES.items())
     for i in range(0, len(items), 2):
         row = []
@@ -9340,10 +9348,10 @@ async def _render_digest_genres(query: Any) -> None:
     )
 
 
-async def _render_digest_schedules(query: Any, state: Dict[str, Any]) -> None:
+async def _render_digest_schedules(query: Any, state: dict[str, Any]) -> None:
     selected = {int(day) for day in state.get("selected_days", set())}
-    rows: List[List[InlineKeyboardButton]] = []
-    weekday_buttons: List[InlineKeyboardButton] = []
+    rows: list[list[InlineKeyboardButton]] = []
+    weekday_buttons: list[InlineKeyboardButton] = []
     for day, short_name, _ in DIGEST_WEEKDAYS:
         mark = "✅" if day in selected else "▫️"
         weekday_buttons.append(
@@ -9402,7 +9410,7 @@ async def _render_digest_list(query: Any, context: CallbackContext) -> None:
         return
 
     lines = ["📋 <b>Рассылки этой группы</b>\n"]
-    rows: List[List[InlineKeyboardButton]] = []
+    rows: list[list[InlineKeyboardButton]] = []
     for sub in subscriptions[:12]:
         status = "✅" if sub["enabled"] else "⏸"
         dest = _digest_destination_label(sub["thread_id"], topics)
@@ -9423,7 +9431,7 @@ async def _render_digest_list(query: Any, context: CallbackContext) -> None:
     await safe_edit_message_text(query, "\n\n".join(lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
 
 
-def _digest_source_track_score(candidate: Dict[str, Any], track: Dict[str, Any]) -> int:
+def _digest_source_track_score(candidate: dict[str, Any], track: dict[str, Any]) -> int:
     """Score a search result only for resolving a concrete Deezer chart item.
 
     This is not user-facing search ranking. A result is accepted only when both
@@ -9480,7 +9488,7 @@ def _digest_source_track_score(candidate: Dict[str, Any], track: Dict[str, Any])
     return score
 
 
-async def _resolve_digest_source_track(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+async def _resolve_digest_source_track(candidate: dict[str, Any]) -> dict[str, Any] | None:
     """Find the actual downloadable VK/Yandex/YouTube track for a Deezer chart row."""
     artist = str(candidate.get("artist") or "").strip()
     title = str(candidate.get("name") or candidate.get("title") or "").strip()
@@ -9534,7 +9542,7 @@ def _digest_fatal_destination_error(exc: Exception) -> bool:
     ))
 
 
-async def _select_digest_candidates(subscription: Dict[str, Any]) -> List[Dict[str, Any]]:
+async def _select_digest_candidates(subscription: dict[str, Any]) -> list[dict[str, Any]]:
     """Return fresh Deezer chart candidates, whether cached or not.
 
     More candidates than the requested count are returned so the sender can skip
@@ -9560,8 +9568,8 @@ async def _select_digest_candidates(subscription: Dict[str, Any]) -> List[Dict[s
         int(subscription["id"]),
         days=history_days,
     )
-    eligible: List[Dict[str, Any]] = []
-    seen_track_keys: Set[str] = set()
+    eligible: list[dict[str, Any]] = []
+    seen_track_keys: set[str] = set()
 
     for position, candidate in enumerate(chart):
         artist = str(candidate.get("artist") or "").strip()
@@ -9613,7 +9621,7 @@ async def _select_digest_candidates(subscription: Dict[str, Any]) -> List[Dict[s
         int(getattr(config, "DIGEST_MAX_CANDIDATE_ATTEMPTS", requested_count * 6) or requested_count * 6),
     )
     pool = eligible[:pool_limit]
-    selected: List[Dict[str, Any]] = []
+    selected: list[dict[str, Any]] = []
     rng = random.SystemRandom()
     while pool and len(selected) < attempt_limit:
         weights = [1.0 / (1.0 + float(item.get("chart_position", 0)) * 0.08) for item in pool]
@@ -9625,10 +9633,10 @@ async def _select_digest_candidates(subscription: Dict[str, Any]) -> List[Dict[s
 
 async def _send_digest_candidate(
     application: Application,
-    subscription: Dict[str, Any],
-    candidate: Dict[str, Any],
-    blocked_history_keys: Optional[Set[str]] = None,
-) -> Optional[Dict[str, Any]]:
+    subscription: dict[str, Any],
+    candidate: dict[str, Any],
+    blocked_history_keys: set[str] | None = None,
+) -> dict[str, Any] | None:
     """Send one candidate from cache or download it and populate the cache."""
     chat_id = int(subscription["chat_id"])
     thread_id = int(subscription.get("thread_id") or 0)
@@ -9636,7 +9644,7 @@ async def _send_digest_candidate(
     synthetic_user_id = -1_000_000_000 - subscription_id
 
     async def send_audio_value(audio_value: Any, artist: str, title: str) -> Any:
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "chat_id": chat_id,
             "audio": audio_value,
             "title": str(title or candidate.get("title") or "")[:64],
@@ -9650,7 +9658,7 @@ async def _send_digest_candidate(
             kwargs["message_thread_id"] = thread_id
         return await safe_send_audio(application.bot, **kwargs)
 
-    actual_track: Optional[Dict[str, Any]] = None
+    actual_track: dict[str, Any] | None = None
     sent_message = None
     used_cache = False
     original_file_id = str(candidate.get("file_id") or "")
@@ -9796,7 +9804,7 @@ async def _send_digest_candidate(
     }
 
 
-async def send_group_digest(application: Application, subscription: Dict[str, Any], manual: bool = False) -> Dict[str, Any]:
+async def send_group_digest(application: Application, subscription: dict[str, Any], manual: bool = False) -> dict[str, Any]:
     subscription_id = int(subscription["id"])
     async with _digest_send_lock(subscription_id):
         candidates = await _select_digest_candidates(subscription)
@@ -9820,7 +9828,7 @@ async def send_group_digest(application: Application, subscription: Dict[str, An
             f"Формирую до <b>{requested_count}</b> популярных треков по данным Deezer. "
             "Отсутствующие в кэше композиции бот скачает автоматически."
         )
-        header_kwargs: Dict[str, Any] = {"chat_id": chat_id, "text": preparing_text, "parse_mode": "HTML"}
+        header_kwargs: dict[str, Any] = {"chat_id": chat_id, "text": preparing_text, "parse_mode": "HTML"}
         if thread_id:
             header_kwargs["message_thread_id"] = thread_id
 
@@ -9835,7 +9843,7 @@ async def send_group_digest(application: Application, subscription: Dict[str, An
         cached_count = 0
         downloaded_count = 0
         failed_count = 0
-        sent_this_run: Set[str] = set()
+        sent_this_run: set[str] = set()
         count_manual = bool(getattr(config, "DIGEST_TEST_COUNTS_AS_SENT", True))
 
         concurrency = max(
@@ -10216,7 +10224,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
         await safe_answer_callback(query, "Формирую тестовую подборку…")
         result = await send_group_digest(context.application, subscription, manual=True)
         if not result.get("ok") and not result.get("notified"):
-            kwargs: Dict[str, Any] = {
+            kwargs: dict[str, Any] = {
                 "chat_id": chat_id,
                 "text": "⚠️ Тестовая подборка не отправлена: " + str(result.get("reason") or "нет подходящих треков"),
             }
@@ -10473,7 +10481,7 @@ async def playlist_command(update: Update, context: CallbackContext) -> None:
         sess.chat_id = update.effective_chat.id
         sess.original_message_id = update.effective_message.message_id
         sess.search_message_id = update.effective_message.message_id
-    lines = [f"📚 <b>Playlist / Album</b>\n", f"Треков: <b>{len(rows)}</b>\n"]
+    lines = ["📚 <b>Playlist / Album</b>\n", f"Треков: <b>{len(rows)}</b>\n"]
     for i, tr in enumerate(rows[:20], 1):
         lines.append(f"{i}. {_esc(tr.get('artist',''))} — {_esc(tr.get('title',''))}")
     if len(rows) > 20:
@@ -10608,11 +10616,11 @@ async def repeat_last_command(update: Update, context: CallbackContext) -> None:
         return
     await download_and_send_audio(update, context, update.effective_message, last, update.effective_message.message_id)
 
-async def _extract_artists_from_xlsx(file_path: str, max_artists: int = None) -> List[str]:
+async def _extract_artists_from_xlsx(file_path: str, max_artists: int = None) -> list[str]:
     """Читает .xlsx и возвращает список артистов (лист Artists/первая колонка)."""
     loop = asyncio.get_running_loop()
 
-    def _read() -> List[str]:
+    def _read() -> list[str]:
         wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
         try:
             sheet = wb["Artists"] if "Artists" in wb.sheetnames else wb[wb.sheetnames[0]]
@@ -10652,7 +10660,7 @@ async def _extract_artists_from_xlsx(file_path: str, max_artists: int = None) ->
     return await loop.run_in_executor(None, _read)
 
 
-async def _run_excel_warmup_for_admin(update: Update, context: CallbackContext, artists: List[str]):
+async def _run_excel_warmup_for_admin(update: Update, context: CallbackContext, artists: list[str]):
     """Прогрев: по каждому артисту ищем и скачиваем пачку треков, чтобы набрать file_id."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
@@ -11398,7 +11406,7 @@ class BotRunner:
                     await bot_instance.close_session()
                 elif hasattr(bot_instance, 'shutdown'):
                     await bot_instance.shutdown()
-                elif hasattr(bot_instance, 'session') and getattr(bot_instance, 'session'):
+                elif hasattr(bot_instance, 'session') and bot_instance.session:
                     await bot_instance.session.close()
             except Exception:
                 logger.exception("Ошибка при закрытии ресурсов музыкального бота")

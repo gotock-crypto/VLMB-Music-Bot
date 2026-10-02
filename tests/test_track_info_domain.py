@@ -1,5 +1,6 @@
 from domain.track_info import TrackInfo, track_uid_from_any
 
+
 def test_track_info_generates_canonical_provider_uid():
     track = TrackInfo(idx=0, track_id="123", title="Song", artist="Artist", album="", duration_sec=120, source="ym")
     assert track.ensure_uid() == "ym:123"

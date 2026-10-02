@@ -1,6 +1,8 @@
 import pytest
+
 from application.state.machine import critical_flow_machine
 from domain.errors import InvalidTransition
+
 
 def test_critical_download_favorite_history_flow():
     s = "idle"

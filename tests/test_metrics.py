@@ -1,5 +1,7 @@
 import pytest
+
 from services.metrics import MetricsRegistry
+
 
 @pytest.mark.asyncio
 async def test_metrics_percentiles():

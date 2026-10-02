@@ -1,6 +1,8 @@
 import pytest
+
 from providers.base import CallableProviderAdapter
-from services.provider_router import ProviderRouter, ProviderFailure
+from services.provider_router import ProviderRouter
+
 
 @pytest.mark.asyncio
 async def test_adapter_has_unified_search_download_contract():

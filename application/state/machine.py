@@ -1,8 +1,11 @@
 """Small explicit state machine for user interaction auditing."""
 from __future__ import annotations
+
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Iterable
+
 from domain.errors import InvalidTransition
+
 
 @dataclass(frozen=True)
 class Transition:
@@ -13,7 +16,7 @@ class Transition:
 class StateMachine:
     def __init__(self, transitions: Iterable[Transition], initial: str = "idle"):
         self.initial = initial
-        self._map: Dict[tuple[str, str], Transition] = {}
+        self._map: dict[tuple[str, str], Transition] = {}
         for t in transitions:
             key = (t.source, t.event)
             if key in self._map:
@@ -26,7 +29,7 @@ class StateMachine:
         except KeyError as exc:
             raise InvalidTransition(f"{state} --{event}--> ?") from exc
 
-    def allowed_events(self, state: str) -> FrozenSet[str]:
+    def allowed_events(self, state: str) -> frozenset[str]:
         return frozenset(event for (source, event) in self._map if source == state)
 
     def transitions(self) -> tuple[Transition, ...]:

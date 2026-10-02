@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 try:
     import yt_dlp
@@ -16,7 +16,7 @@ class PlaylistManager:
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
 
     @staticmethod
-    def _extract_sync(url: str, limit: int) -> List[Dict[str, Any]]:
+    def _extract_sync(url: str, limit: int) -> list[dict[str, Any]]:
         if yt_dlp is None:
             raise RuntimeError("yt-dlp недоступен")
         opts = {
@@ -32,7 +32,7 @@ class PlaylistManager:
         entries = info.get("entries") if isinstance(info, dict) else None
         if entries is None:
             entries = [info] if isinstance(info, dict) else []
-        rows: List[Dict[str, Any]] = []
+        rows: list[dict[str, Any]] = []
         for entry in entries:
             if not entry:
                 continue
@@ -53,7 +53,7 @@ class PlaylistManager:
             })
         return rows
 
-    async def extract(self, url: str, limit: int = 100) -> List[Dict[str, Any]]:
+    async def extract(self, url: str, limit: int = 100) -> list[dict[str, Any]]:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, self._extract_sync, url, limit)
 

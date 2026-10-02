@@ -1,9 +1,12 @@
 """Static callback audit for the legacy Telegram core."""
 from __future__ import annotations
+
 import ast
 from dataclasses import dataclass
 from pathlib import Path
+
 from .catalog import resolve_callback
+
 
 @dataclass(frozen=True)
 class CallbackOccurrence:

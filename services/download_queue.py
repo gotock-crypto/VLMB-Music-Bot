@@ -4,15 +4,16 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any
 
 
 @dataclass
 class DownloadJob:
     job_id: str
     user_id: int
-    payload: Dict[str, Any]
+    payload: dict[str, Any]
     priority: int = 100
     retries: int = 0
     status: str = "queued"
@@ -20,7 +21,7 @@ class DownloadJob:
     updated_at: float = field(default_factory=time.time)
     error: str = ""
     result: Any = None
-    task: Optional[asyncio.Task] = None
+    task: asyncio.Task | None = None
 
 
 class DownloadQueue:
@@ -28,10 +29,10 @@ class DownloadQueue:
         self.worker_count = max(1, int(worker_count))
         self.max_size = max(1, int(max_size))
         self._queue: asyncio.PriorityQueue = asyncio.PriorityQueue(maxsize=self.max_size)
-        self.jobs: Dict[str, DownloadJob] = {}
+        self.jobs: dict[str, DownloadJob] = {}
         self._workers: list[asyncio.Task] = []
         self._seq = 0
-        self._handler: Optional[Callable[[DownloadJob], Awaitable[Any]]] = None
+        self._handler: Callable[[DownloadJob], Awaitable[Any]] | None = None
         self._started = False
 
     async def start(self, handler: Callable[[DownloadJob], Awaitable[Any]]) -> None:
@@ -72,7 +73,7 @@ class DownloadQueue:
                 job.updated_at = time.time()
                 self._queue.task_done()
 
-    async def submit(self, user_id: int, payload: Dict[str, Any], priority: int = 100) -> DownloadJob:
+    async def submit(self, user_id: int, payload: dict[str, Any], priority: int = 100) -> DownloadJob:
         if self._queue.full():
             raise RuntimeError("download queue is full")
         self._seq += 1
@@ -81,7 +82,7 @@ class DownloadQueue:
         await self._queue.put((job.priority, self._seq, job.job_id))
         return job
 
-    def get(self, job_id: str) -> Optional[DownloadJob]:
+    def get(self, job_id: str) -> DownloadJob | None:
         return self.jobs.get(job_id)
 
     async def cancel(self, job_id: str) -> bool:
@@ -93,8 +94,8 @@ class DownloadQueue:
             job.task.cancel()
         return True
 
-    def snapshot(self) -> Dict[str, Any]:
-        counts: Dict[str, int] = {}
+    def snapshot(self) -> dict[str, Any]:
+        counts: dict[str, int] = {}
         for job in self.jobs.values():
             counts[job.status] = counts.get(job.status, 0) + 1
         return {"workers": self.worker_count, "queued": self._queue.qsize(), "jobs": counts}

@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from difflib import SequenceMatcher
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any
 
 
 def normalize_text(value: str) -> str:
@@ -18,7 +19,7 @@ def _tokens(value: str) -> set[str]:
     return {x for x in re.split(r"\s+", normalize_text(value)) if x}
 
 
-def split_query(query: str) -> Tuple[str, str]:
+def split_query(query: str) -> tuple[str, str]:
     q = normalize_text(query)
     for sep in (" - ", " — ", " – ", " —", "-"):
         if sep in q:
@@ -28,13 +29,13 @@ def split_query(query: str) -> Tuple[str, str]:
     return "", q
 
 
-def _artist_title(item: Dict[str, Any]) -> Tuple[str, str]:
+def _artist_title(item: dict[str, Any]) -> tuple[str, str]:
     artist = str(item.get("artist") or item.get("performer") or "")
     title = str(item.get("title") or item.get("name") or "")
     return normalize_text(artist), normalize_text(title)
 
 
-def score_track(item: Dict[str, Any], query: str) -> float:
+def score_track(item: dict[str, Any], query: str) -> float:
     artist, title = _artist_title(item)
     q_artist, q_title = split_query(query)
     q = normalize_text(query)
@@ -64,8 +65,8 @@ def score_track(item: Dict[str, Any], query: str) -> float:
     return min(score, 1.0)
 
 
-def deduplicate_tracks(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    result: List[Dict[str, Any]] = []
+def deduplicate_tracks(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
     seen: set[tuple] = set()
     for item in items:
         artist, title = _artist_title(item)
@@ -79,7 +80,7 @@ def deduplicate_tracks(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result
 
 
-def rank_tracks(items: Iterable[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+def rank_tracks(items: Iterable[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     enriched = []
     for idx, item in enumerate(items):
         row = dict(item)

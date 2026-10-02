@@ -1,7 +1,8 @@
 """Callback/state contract catalog for the Telegram boundary."""
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Optional
+
 
 @dataclass(frozen=True)
 class CallbackSpec:
@@ -39,7 +40,7 @@ PREFIXES = tuple(sorted((s.prefix for s in CALLBACK_SPECS if s.prefix.endswith((
 EXACT = {s.prefix: s for s in CALLBACK_SPECS if not s.prefix.endswith((':', '_'))}
 BY_PREFIX = {s.prefix: s for s in CALLBACK_SPECS}
 
-def resolve_callback(data: str) -> Optional[CallbackSpec]:
+def resolve_callback(data: str) -> CallbackSpec | None:
     if data in EXACT:
         return EXACT[data]
     for prefix in PREFIXES:

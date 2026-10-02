@@ -1,5 +1,6 @@
 from application.state.machine import critical_flow_machine
 
+
 def run(events):
     state = "idle"
     for event in events:

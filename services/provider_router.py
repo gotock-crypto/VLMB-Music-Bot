@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
+from typing import Any
 
 
 class ProviderFailure(RuntimeError):
@@ -70,13 +71,13 @@ class ProviderRouter:
     def __init__(self, *, cooldown_seconds: float = 30.0, failure_threshold: int = 2):
         self.cooldown_seconds = float(cooldown_seconds)
         self.failure_threshold = max(1, int(failure_threshold))
-        self.circuits: Dict[str, Circuit] = {}
-        self.last_route: Dict[str, str] = {}
+        self.circuits: dict[str, Circuit] = {}
+        self.last_route: dict[str, str] = {}
 
     def _circuit(self, provider: str) -> Circuit:
         return self.circuits.setdefault(provider, Circuit())
 
-    def status(self) -> Dict[str, Dict[str, Any]]:
+    def status(self) -> dict[str, dict[str, Any]]:
         now = time.monotonic()
         return {
             name: {
@@ -125,7 +126,7 @@ class ProviderRouter:
         *,
         allow_empty: bool = False,
     ) -> Any:
-        errors: List[ProviderFailure] = []
+        errors: list[ProviderFailure] = []
         for provider, fn in candidates:
             try:
                 result = await self.call(provider, operation, fn)

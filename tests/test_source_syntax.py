@@ -1,5 +1,5 @@
-from pathlib import Path
 import py_compile
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 

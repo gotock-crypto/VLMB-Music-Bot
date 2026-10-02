@@ -6,7 +6,8 @@ then original order. No quality thresholds or source filtering are added here.
 """
 
 import re
-from typing import Any, Dict, Iterable, List
+from collections.abc import Iterable
+from typing import Any
 
 
 def normalize_text(value: str) -> str:
@@ -25,13 +26,13 @@ def artist_query(query: str) -> str:
     return q
 
 
-def rank_tracks_by_artist(tracks: Iterable[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+def rank_tracks_by_artist(tracks: Iterable[dict[str, Any]], query: str) -> list[dict[str, Any]]:
     items = list(tracks or [])
     artist_q = normalize_text(artist_query(query))
     if not artist_q:
         return items
 
-    def key(item: Dict[str, Any]) -> int:
+    def key(item: dict[str, Any]) -> int:
         artist = normalize_text((item or {}).get("artist", ""))
         if artist == artist_q:
             return 0

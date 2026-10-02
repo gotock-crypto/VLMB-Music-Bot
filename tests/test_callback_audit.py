@@ -1,4 +1,5 @@
 from pathlib import Path
+
 from application.callbacks.audit import audit_callbacks, extract_callback_literals
 from application.callbacks.catalog import resolve_callback
 

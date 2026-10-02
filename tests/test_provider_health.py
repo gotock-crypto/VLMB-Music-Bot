@@ -1,5 +1,6 @@
 from services.provider_health import ProviderHealth
 
+
 def test_provider_health_records_success_and_failure():
     h = ProviderHealth()
     h.record_success("vk", "search", 10, count=3)

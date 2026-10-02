@@ -1,8 +1,10 @@
 """Unified provider adapter contract."""
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Callable, Iterable, Optional
-from domain.models import DownloadResult, Track
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 
 class MusicProviderAdapter(ABC):
     name: str
@@ -20,9 +22,9 @@ class MusicProviderAdapter(ABC):
 
 class CallableProviderAdapter(MusicProviderAdapter):
     """Adapter for existing manager methods during the migration period."""
-    def __init__(self, name: str, *, search: Optional[Callable[..., Awaitable[Any]]] = None,
-                 download: Optional[Callable[..., Awaitable[Any]]] = None,
-                 health: Optional[Callable[..., Awaitable[dict[str, Any]]]] = None):
+    def __init__(self, name: str, *, search: Callable[..., Awaitable[Any]] | None = None,
+                 download: Callable[..., Awaitable[Any]] | None = None,
+                 health: Callable[..., Awaitable[dict[str, Any]]] | None = None):
         self.name = name
         self._search = search
         self._download = download

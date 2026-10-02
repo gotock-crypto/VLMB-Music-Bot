@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """VLMB 4.0 architecture guardrails."""
 from pathlib import Path
+
 ROOT=Path(__file__).resolve().parents[1]
 required=[ROOT/'application',ROOT/'domain',ROOT/'providers',ROOT/'storage']
 missing=[str(p.relative_to(ROOT)) for p in required if not p.is_dir()]

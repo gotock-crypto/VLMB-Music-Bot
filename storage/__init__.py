@@ -1,2 +1,3 @@
-from .contracts import UserStateStore, InMemoryUserStateStore
-__all__ = ["UserStateStore", "InMemoryUserStateStore"]
+from .contracts import InMemoryUserStateStore, UserStateStore
+
+__all__ = ["InMemoryUserStateStore", "UserStateStore"]

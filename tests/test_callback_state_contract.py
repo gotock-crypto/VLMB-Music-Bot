@@ -1,6 +1,7 @@
 from application.callbacks.catalog import CALLBACK_SPECS
 from application.state.machine import critical_flow_machine
 
+
 def test_callback_catalog_has_no_duplicate_prefixes():
     prefixes = [spec.prefix for spec in CALLBACK_SPECS]
     assert len(prefixes) == len(set(prefixes))

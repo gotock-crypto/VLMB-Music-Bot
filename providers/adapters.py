@@ -1,7 +1,11 @@
 """Named adapters for the current provider implementations."""
 from __future__ import annotations
-from typing import Any, Callable
+
+from collections.abc import Callable
+from typing import Any
+
 from .base import CallableProviderAdapter
+
 
 class YandexProviderAdapter(CallableProviderAdapter):
     def __init__(self, manager: Any):

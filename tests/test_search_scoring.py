@@ -1,5 +1,6 @@
 from services.search_scoring import rank_tracks_by_artist
 
+
 def test_artist_first_order_is_stable():
     tracks = [
         {"artist": "Other", "title": "A"},

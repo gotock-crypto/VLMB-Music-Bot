@@ -1,4 +1,4 @@
-from services.search_engine import rank_tracks, score_track
+from services.search_engine import rank_tracks
 
 
 def test_exact_artist_title_wins():

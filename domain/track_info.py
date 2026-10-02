@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 def _source_code(value: Any) -> str:
@@ -29,15 +29,15 @@ class TrackInfo:
     album: str
     duration_sec: int
     source: str = "vk"
-    vk_url: Optional[str] = None
-    ym_download_info: Optional[Any] = None
-    vk_key: Optional[str] = None
-    youtube_id: Optional[str] = None
-    youtube_url: Optional[str] = None
-    audio_ext: Optional[str] = None
-    track_obj: Optional[Any] = None
-    uid: Optional[str] = None
-    bitrate_kbps: Optional[int] = None
+    vk_url: str | None = None
+    ym_download_info: Any | None = None
+    vk_key: str | None = None
+    youtube_id: str | None = None
+    youtube_url: str | None = None
+    audio_ext: str | None = None
+    track_obj: Any | None = None
+    uid: str | None = None
+    bitrate_kbps: int | None = None
 
     def _compute_uid(self) -> str:
         try:
@@ -87,7 +87,7 @@ class TrackInfo:
             raise KeyError(key)
         return value
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         uid = self.ensure_uid()
         return {
             "idx": self.idx, "track_id": str(self.track_id), "title": self.title,
@@ -99,7 +99,7 @@ class TrackInfo:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TrackInfo":
+    def from_dict(cls, data: dict[str, Any]) -> TrackInfo:
         track = cls(
             idx=data["idx"], track_id=data["track_id"], title=data["title"], artist=data["artist"],
             album=data.get("album", ""), duration_sec=data["duration_sec"], source=data.get("source", "vk"),

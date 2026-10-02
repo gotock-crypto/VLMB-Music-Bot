@@ -1,6 +1,9 @@
 import asyncio
+
 import pytest
-from services.provider_router import ProviderRouter, ProviderFailure, classify_error
+
+from services.provider_router import ProviderFailure, ProviderRouter, classify_error
+
 
 def test_classification():
     assert classify_error(asyncio.TimeoutError()) == "timeout"
