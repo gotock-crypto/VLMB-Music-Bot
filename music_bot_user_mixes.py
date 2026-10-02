@@ -2875,7 +2875,7 @@ class AsyncMusicBot:
             tm = getattr(self, 'vk_token_manager', None)
             tokens = getattr(tm, 'active_tokens', None) if tm else None
             if isinstance(tokens, dict) and tokens:
-                for _tok, info in tokens.items():
+                for info in tokens.values():
                     if not self._vk_info_is_expired(info):
                         return True
         except Exception:
@@ -5751,13 +5751,13 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
 
         # --- Admin access gate (protect ALL admin callbacks) ---
         if (
-            callback_data.startswith("admin_")
-            or callback_data in {"tokens_menu", "add_token", "refresh_tokens", "remove_token_menu"}
-            or callback_data.startswith("del_token:")
+            (
+            callback_data.startswith(("admin_", "del_token:")) or callback_data in {"tokens_menu", "add_token", "refresh_tokens", "remove_token_menu"}
+            )
+            and not _is_admin(query.from_user.id)
         ):
-            if not _is_admin(query.from_user.id):
-                await safe_answer_callback(query, "⛔️ Доступ только для админов", show_alert=True)
-                return
+            await safe_answer_callback(query, "⛔️ Доступ только для админов", show_alert=True)
+            return
 
         if callback_data.startswith("user_settings:"):
             if not await user_check(update):
@@ -5925,7 +5925,7 @@ async def button_handler(update: Update, context: CallbackContext) -> None:
             await handle_delete_token_callback(update, context, idx)
             return
         
-        if callback_data.startswith("pldl:") or callback_data.startswith("plall:"):
+        if callback_data.startswith(("pldl:", "plall:")):
             parts = callback_data.split(":")
             sid = parts[1] if len(parts) > 1 else ""
             sess = await bot_instance.session_manager.get_session(sid)
@@ -7001,23 +7001,21 @@ class AdminDB:
 
     async def ban_user(self, user_id: int, banned_by: int, reason: str = "") -> bool:
         now = _utc_now().isoformat()
-        async with self._write_lock:
-            async with _sqlite_connection(self.db_path) as conn:
-                await conn.execute(
-                    "INSERT INTO bans(user_id,reason,banned_by,banned_at) VALUES(?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason, banned_by=excluded.banned_by, banned_at=excluded.banned_at",
-                    (int(user_id), reason, int(banned_by), now)
-                )
-                await conn.commit()
+        async with self._write_lock, _sqlite_connection(self.db_path) as conn:
+            await conn.execute(
+                "INSERT INTO bans(user_id,reason,banned_by,banned_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason, banned_by=excluded.banned_by, banned_at=excluded.banned_at",
+                (int(user_id), reason, int(banned_by), now)
+            )
+            await conn.commit()
         return True
 
     async def unban_user(self, user_id: int) -> bool:
-        async with self._write_lock:
-            async with _sqlite_connection(self.db_path) as conn:
-                cur = await conn.execute("DELETE FROM bans WHERE user_id=?", (int(user_id),))
-                changed = int(cur.rowcount or 0) > 0
-                await cur.close()
-                await conn.commit()
+        async with self._write_lock, _sqlite_connection(self.db_path) as conn:
+            cur = await conn.execute("DELETE FROM bans WHERE user_id=?", (int(user_id),))
+            changed = int(cur.rowcount or 0) > 0
+            await cur.close()
+            await conn.commit()
         return changed
 
     async def get_banned_user_ids(self) -> set[int]:
@@ -7123,55 +7121,52 @@ class AdminDB:
             {"q": query[:200], "ym": ym_count, "vk": vk_count, "yt": yt_count, "total": total},
             ensure_ascii=False,
         )
-        async with self._write_lock:
-            async with _sqlite_connection(self.db_path) as conn:
-                await conn.execute(
-                    "INSERT INTO stats_daily(day,searches,ym_searches,vk_searches,yt_searches) VALUES(?,?,?,?,?) "
-                    "ON CONFLICT(day) DO UPDATE SET "
-                    "searches=searches+excluded.searches, "
-                    "ym_searches=ym_searches+excluded.ym_searches, "
-                    "vk_searches=vk_searches+excluded.vk_searches, "
-                    "yt_searches=yt_searches+excluded.yt_searches",
-                    (day, 1, 1 if ym_count else 0, 1 if vk_count else 0, 1 if yt_count else 0),
-                )
-                await conn.execute(
-                    "INSERT INTO stats_events(ts,event,user_id,chat_id,source,extra) VALUES(?,?,?,?,?,?)",
-                    (ts, "search", user_id, chat_id, None, extra_s),
-                )
-                await conn.commit()
+        async with self._write_lock, _sqlite_connection(self.db_path) as conn:
+            await conn.execute(
+                "INSERT INTO stats_daily(day,searches,ym_searches,vk_searches,yt_searches) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(day) DO UPDATE SET "
+                "searches=searches+excluded.searches, "
+                "ym_searches=ym_searches+excluded.ym_searches, "
+                "vk_searches=vk_searches+excluded.vk_searches, "
+                "yt_searches=yt_searches+excluded.yt_searches",
+                (day, 1, 1 if ym_count else 0, 1 if vk_count else 0, 1 if yt_count else 0),
+            )
+            await conn.execute(
+                "INSERT INTO stats_events(ts,event,user_id,chat_id,source,extra) VALUES(?,?,?,?,?,?)",
+                (ts, "search", user_id, chat_id, None, extra_s),
+            )
+            await conn.commit()
 
     async def log_download(self, user_id: int, chat_id: int, source: str):
         day = _utc_now().date().isoformat()
         ts = _utc_now().isoformat()
-        async with self._write_lock:
-            async with _sqlite_connection(self.db_path) as conn:
-                await conn.execute(
-                    "INSERT INTO stats_daily(day,downloads) VALUES(?,1) "
-                    "ON CONFLICT(day) DO UPDATE SET downloads=downloads+1",
-                    (day,),
-                )
-                await conn.execute(
-                    "INSERT INTO stats_events(ts,event,user_id,chat_id,source,extra) VALUES(?,?,?,?,?,?)",
-                    (ts, "download", user_id, chat_id, source, None),
-                )
-                await conn.commit()
+        async with self._write_lock, _sqlite_connection(self.db_path) as conn:
+            await conn.execute(
+                "INSERT INTO stats_daily(day,downloads) VALUES(?,1) "
+                "ON CONFLICT(day) DO UPDATE SET downloads=downloads+1",
+                (day,),
+            )
+            await conn.execute(
+                "INSERT INTO stats_events(ts,event,user_id,chat_id,source,extra) VALUES(?,?,?,?,?,?)",
+                (ts, "download", user_id, chat_id, source, None),
+            )
+            await conn.commit()
 
     async def log_error(self, user_id: int = None, chat_id: int = None, where: str = "", err: str = ""):
         day = _utc_now().date().isoformat()
         ts = _utc_now().isoformat()
         extra_s = json.dumps({"where": where[:120], "err": (err or "")[:300]}, ensure_ascii=False)
-        async with self._write_lock:
-            async with _sqlite_connection(self.db_path) as conn:
-                await conn.execute(
-                    "INSERT INTO stats_daily(day,errors) VALUES(?,1) "
-                    "ON CONFLICT(day) DO UPDATE SET errors=errors+1",
-                    (day,),
-                )
-                await conn.execute(
-                    "INSERT INTO stats_events(ts,event,user_id,chat_id,source,extra) VALUES(?,?,?,?,?,?)",
-                    (ts, "error", user_id, chat_id, None, extra_s),
-                )
-                await conn.commit()
+        async with self._write_lock, _sqlite_connection(self.db_path) as conn:
+            await conn.execute(
+                "INSERT INTO stats_daily(day,errors) VALUES(?,1) "
+                "ON CONFLICT(day) DO UPDATE SET errors=errors+1",
+                (day,),
+            )
+            await conn.execute(
+                "INSERT INTO stats_events(ts,event,user_id,chat_id,source,extra) VALUES(?,?,?,?,?,?)",
+                (ts, "error", user_id, chat_id, None, extra_s),
+            )
+            await conn.commit()
 
     async def log_user_action(self, user_id: int, chat_id: int, action: str, payload: Any = None):
         """Лог конкретных действий пользователей (для админки/Excel)."""
@@ -7883,7 +7878,7 @@ def _is_admin(user_id: int) -> bool:
         return False
     try:
         admin_ids = getattr(config, "ADMIN_IDS", None) or []
-        if uid in set(int(x) for x in admin_ids):
+        if uid in {int(x) for x in admin_ids}:
             return True
     except Exception:
         pass
