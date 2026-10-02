@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from sqlalchemy import (
+    TIMESTAMP,
     BigInteger,
     CheckConstraint,
     Float,
     Index,
     Integer,
     Text,
-    TIMESTAMP,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
