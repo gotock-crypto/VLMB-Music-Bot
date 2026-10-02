@@ -186,7 +186,7 @@ def acquire_single_instance_lock() -> bool:
         or os.path.join(tempfile.gettempdir(), "vlmb_music_bot.lock")
     )
     try:
-        handle = open(lock_path, "a+", encoding="utf-8")
+        handle = open(lock_path, "a+", encoding="utf-8")  # noqa: SIM115
         handle.seek(0)
         if os.name == "nt":
             import msvcrt
