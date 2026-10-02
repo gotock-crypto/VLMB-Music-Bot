@@ -1,0 +1,42 @@
+__pycache__/
+*.py[cod]
+venv/
+.env
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.log.*
+*.tmp
+*.part
+.DS_Store
+
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local secrets and environment
+.env
+.env.*
+!.env.example
+
+# Local databases and runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Backups and temporary source copies
+*.backup-*
+*.before-*
+*.bak
+*.orig
+
+# Python and test artifacts
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage*
+htmlcov/
+music_bot_user_mixes.py.before_tempdir_fix_*

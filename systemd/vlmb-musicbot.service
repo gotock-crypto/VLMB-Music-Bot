@@ -1,0 +1,19 @@
+[Unit]
+Description=VLMB Music Bot
+After=network-online.target redis-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/MusBot
+EnvironmentFile=/root/MusBot/.env
+ExecStart=/root/MusBot/venv/bin/python3 /root/MusBot/music_bot_user_mixes.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGTERM
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
