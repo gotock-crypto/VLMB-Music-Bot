@@ -9239,7 +9239,7 @@ async def handle_user_mix_callback(update: Update, context: CallbackContext) -> 
             "created_by": user_id,
         }
         try:
-            task = bot_instance.create_background_task(
+            bot_instance.create_background_task(
                 _run_user_mix(context.application, subscription),
                 f"user-mix:{history_id}",
             )
