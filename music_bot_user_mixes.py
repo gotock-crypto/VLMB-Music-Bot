@@ -1449,7 +1449,7 @@ class AsyncCacheManager:
             await self.redis_client.ping()
             logger.info("Redis connection established with connection pooling")
             
-            await self.redis_client.set("vlmb:startup_time", datetime.now().isoformat())
+            await self.redis_client.set("vlmb:startup_time", datetime.now(timezone.utc).isoformat())
             
         except Exception as e:
             logger.warning(f"Redis not available: {e}")
@@ -1666,7 +1666,7 @@ class AsyncVKTokenManager:
             if raw_value.endswith("Z"):
                 raw_value = raw_value[:-1] + "+00:00"
             expiry_date = datetime.fromisoformat(raw_value)
-            now = datetime.now(expiry_date.tzinfo) if expiry_date.tzinfo else datetime.now()
+            now = datetime.now(expiry_date.tzinfo or timezone.utc)
             return now >= expiry_date
         except (TypeError, ValueError) as exc:
             logger.warning("Invalid VK token expiration timestamp %r: %s", expires_at, exc)
@@ -4689,7 +4689,7 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
                 )
             except Exception as e:
                 # Keep UX working, but log loudly and at least warm local LRU
-                logger.exception(f"Failed to persist Telegram file_id cache for {track.get('artist')} - {track.get('title')}: {e}")
+                logger.exception("Failed to persist Telegram file_id cache for %s - %s", track.get("artist"), track.get("title"))
                 try:
                     k = bot_instance._tg_query_key(track.get('artist',''), track.get('title',''), track.get('vk_key'))
                     async with bot_instance._tg_file_id_lock:
@@ -9087,7 +9087,7 @@ async def _run_user_mix(application: Application, subscription: dict[str, Any]) 
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.exception("User mix failed: %s", exc)
+        logger.exception("User mix failed")
         kwargs = {
             "chat_id": int(subscription["chat_id"]),
             "text": "⚠️ Не удалось сформировать подборку. Попробуйте ещё раз позже.",
