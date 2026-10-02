@@ -4925,8 +4925,6 @@ async def show_songs_page(update: Update, context: CallbackContext, message, use
         source_icon = _source_icon(song.get('source'))
         artist_raw = (song.get("artist") or "Неизвестный исполнитель").strip()
         title_raw = (song.get("title") or "Неизвестный трек").strip()
-        src = (song.get('source') or 'vk')
-        badge = _source_badge(src)
         k = bot_instance._tg_query_key(artist_raw, title_raw, song.get('vk_key'))
         speed = '⚡' if k in local_fileid_keys else ''
         prefix = f"{i:02d} · {_track_duration_text(song)}"
