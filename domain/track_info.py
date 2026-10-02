@@ -40,20 +40,17 @@ class TrackInfo:
     bitrate_kbps: int | None = None
 
     def _compute_uid(self) -> str:
-        try:
-            if self.source == "ym" and self.track_id:
-                return f"ym:{self.track_id}"
-            if self.source == "vk":
-                if self.vk_key:
-                    return f"vk:{self.vk_key}"
-                if self.track_id:
-                    return f"vkid:{self.track_id}"
-            if self.source == "yt":
-                youtube_id = self.youtube_id or self.track_id
-                if youtube_id:
-                    return f"yt:{youtube_id}"
-        except Exception:
-            pass
+        if self.source == "ym" and self.track_id:
+            return f"ym:{self.track_id}"
+        if self.source == "vk":
+            if self.vk_key:
+                return f"vk:{self.vk_key}"
+            if self.track_id:
+                return f"vkid:{self.track_id}"
+        if self.source == "yt":
+            youtube_id = self.youtube_id or self.track_id
+            if youtube_id:
+                return f"yt:{youtube_id}"
         raw = f"{self.source}|{self.artist}|{self.title}|{self.duration_sec}|{self.vk_url or ''}"
         return "h:" + hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()
 
@@ -116,13 +113,10 @@ def track_uid_from_any(track: Any) -> str:
         return ""
     if isinstance(track, TrackInfo):
         return track.ensure_uid()
-    try:
+    if isinstance(track, dict):
         uid = track.get("uid")
         if uid:
             return str(uid)
-    except Exception:
-        pass
-    try:
         src = _source_code(track.get("source") or "vk")
         if src == "ym" and track.get("track_id"):
             return f"ym:{track.get('track_id')}"
@@ -132,10 +126,7 @@ def track_uid_from_any(track: Any) -> str:
             youtube_id = track.get("youtube_id") or track.get("track_id")
             if youtube_id:
                 return f"yt:{youtube_id}"
-    except Exception:
-        pass
-    try:
         raw = f"{track.get('source', '')}|{track.get('artist', '')}|{track.get('title', '')}|{track.get('duration', 0)}|{track.get('url', '')}"
-    except Exception:
+    else:
         raw = str(track)
     return "h:" + hashlib.md5(str(raw).encode("utf-8", errors="ignore")).hexdigest()
