@@ -574,7 +574,7 @@ def _track_uid_from_any(track: Any) -> str:
 
 
 # ==================== TELEGRAM SAFE API WRAPPERS ====================
-async def _tg_call_with_retries(call, *args, retries: int = None, base_delay: float = None, **kwargs):
+async def _tg_call_with_retries(call, *args, retries: int | None = None, base_delay: float | None = None, **kwargs):
     """Единая обертка для Telegram API: ретраи + backoff + обработка RetryAfter/TimedOut."""
     if retries is None:
         retries = getattr(config, "TELEGRAM_API_RETRIES", 3)
@@ -630,7 +630,7 @@ async def safe_edit_text(message, text: str, **kwargs):
         except Exception:
             return None
 
-async def safe_answer_callback(query, text: str = None, **kwargs):
+async def safe_answer_callback(query, text: str | None = None, **kwargs):
     """Безопасный ответ на callback_query"""
     if not query:
         return None
@@ -1430,7 +1430,7 @@ class AsyncCacheManager:
         self._redis_hits = 0
         self._redis_misses = 0
         
-    async def init_redis(self, redis_url: str = None):
+    async def init_redis(self, redis_url: str | None = None):
         """Инициализация Redis соединения"""
         if not redis_url or redis_url == "":
             logger.info("Redis отключен (URL не указан)")
@@ -1499,7 +1499,7 @@ class AsyncCacheManager:
         self._misses += 1
         return None
     
-    async def set(self, key: str, value: Any, ttl: int = None):
+    async def set(self, key: str, value: Any, ttl: int | None = None):
         """Асинхронное сохранение данных в кэш"""
         if not key or value is None:
             return
@@ -1729,7 +1729,7 @@ class AsyncVKTokenManager:
             self._last_usage_flush.pop(token, None)
             logger.error(f"Error updating token usage: {e}")
     
-    async def add_token(self, token: str, added_by: int, description: str = None, expires_at: str = None) -> bool:
+    async def add_token(self, token: str, added_by: int, description: str | None = None, expires_at: str | None = None) -> bool:
         """Добавление нового токена"""
         try:
             async with _sqlite_connection(self.db_path) as conn:
@@ -2662,7 +2662,7 @@ class AsyncFileManager:
         self.temp_dir = tempfile.mkdtemp(prefix=config.TEMP_DIR_PREFIX)
         logger.info(f"Created temp directory: {self.temp_dir}")
     
-    async def cleanup_old_files(self, max_age: int = None):
+    async def cleanup_old_files(self, max_age: int | None = None):
         """Асинхронная очистка старых файлов"""
         if max_age is None:
             max_age = config.TEMP_FILE_MAX_AGE
@@ -3222,7 +3222,7 @@ class AsyncMusicBot:
             except Exception as e:
                 logger.debug(f"Keepalive loop error: {e}")
 
-    async def set_user_state(self, user_id: int, state: str, data: dict = None):
+    async def set_user_state(self, user_id: int, state: str, data: dict | None = None):
         """Set state through the storage boundary while preserving legacy access."""
         payload = dict(data or {})
         await self.state_store.set(user_id, state, payload)
@@ -3941,7 +3941,7 @@ class AsyncMusicBot:
 
         return filename
     
-    def _tg_query_key(self, artist: str, title: str, vk_key: str = None) -> str:
+    def _tg_query_key(self, artist: str, title: str, vk_key: str | None = None) -> str:
         """Ключ для кэша Telegram file_id"""
         if vk_key:
             return f"vk:{str(vk_key).strip()}"
@@ -4047,7 +4047,7 @@ class AsyncMusicBot:
         )
         await conn.commit()
 
-    async def get_tg_file_id(self, artist: str, title: str, vk_key: str = None) -> str | None:
+    async def get_tg_file_id(self, artist: str, title: str, vk_key: str | None = None) -> str | None:
         """Получить сохранённый Telegram file_id для трека (по artist+title).
 
         Используется для мгновенной отдачи аудио из Telegram без повторного скачивания.
@@ -4150,7 +4150,7 @@ class AsyncMusicBot:
         except Exception as e:
             logger.warning(f"TG file_id db write failed: {e}")
 
-    async def delete_tg_file_id(self, artist: str, title: str, vk_key: str = None) -> None:
+    async def delete_tg_file_id(self, artist: str, title: str, vk_key: str | None = None) -> None:
         """Удалить Telegram file_id (если стал невалидным)."""
         key = self._tg_query_key(artist, title, vk_key)
         cache_key = f"tg_file_id:{key}"
@@ -4442,7 +4442,7 @@ async def _favorite_reply_markup(context: CallbackContext, track: dict[str, Any]
         return None
 
 
-async def download_and_send_audio(update: Update, context: CallbackContext, message, track: dict, original_message_id: int = None) -> bool:
+async def download_and_send_audio(update: Update, context: CallbackContext, message, track: dict, original_message_id: int | None = None) -> bool:
     """Download and send a track; return whether Telegram delivery succeeded."""
     user_id = update.effective_user.id if update and update.effective_user else message.from_user.id
     loading_message = None
@@ -7042,12 +7042,12 @@ class AdminDB:
     async def add_forwarded_file_id(
         self,
         file_id: str,
-        file_unique_id: str = None,
-        file_type: str = None,
-        file_name: str = None,
-        mime_type: str = None,
-        file_size: int = None,
-        added_by: int = None,
+        file_unique_id: str | None = None,
+        file_type: str | None = None,
+        file_name: str | None = None,
+        mime_type: str | None = None,
+        file_size: int | None = None,
+        added_by: int | None = None,
     ) -> bool:
         if not file_id:
             return False
@@ -7092,7 +7092,7 @@ class AdminDB:
             )
             await conn.commit()
 
-    async def log_event(self, event: str, user_id: int = None, chat_id: int = None, source: str = None, extra: Any = None):
+    async def log_event(self, event: str, user_id: int | None = None, chat_id: int | None = None, source: str | None = None, extra: Any = None):
         ts = _utc_now().isoformat()
         try:
             extra_s = json.dumps(extra, ensure_ascii=False) if extra is not None else None
@@ -7152,7 +7152,7 @@ class AdminDB:
             )
             await conn.commit()
 
-    async def log_error(self, user_id: int = None, chat_id: int = None, where: str = "", err: str = ""):
+    async def log_error(self, user_id: int | None = None, chat_id: int | None = None, where: str = "", err: str = ""):
         day = _utc_now().date().isoformat()
         ts = _utc_now().isoformat()
         extra_s = json.dumps({"where": where[:120], "err": (err or "")[:300]}, ensure_ascii=False)
@@ -10609,7 +10609,7 @@ async def repeat_last_command(update: Update, context: CallbackContext) -> None:
         return
     await download_and_send_audio(update, context, update.effective_message, last, update.effective_message.message_id)
 
-async def _extract_artists_from_xlsx(file_path: str, max_artists: int = None) -> list[str]:
+async def _extract_artists_from_xlsx(file_path: str, max_artists: int | None = None) -> list[str]:
     """Читает .xlsx и возвращает список артистов (лист Artists/первая колонка)."""
     loop = asyncio.get_running_loop()
 
