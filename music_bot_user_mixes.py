@@ -25,7 +25,7 @@ import aiohttp
 
 try:
     import psutil
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     psutil = None
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -77,7 +77,7 @@ try:
     from yandex_music import Client  # type: ignore
     try:
         from yandex_music import ClientAsync  # type: ignore
-    except Exception:
+    except ImportError:
         ClientAsync = None  # type: ignore
     YANDEX_MUSIC_AVAILABLE = True
 except ImportError:
@@ -138,7 +138,7 @@ async def _sqlite_connection(db_path: str, **kwargs):
         timeout_ms = max(1, int(float(getattr(config, "DATABASE_TIMEOUT", 20) or 20) * 1000))
         try:
             await conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
-        except Exception as exc:
+        except (AttributeError, OSError, TypeError) as exc:
             logger.debug("SQLite busy_timeout setup failed for %s: %s", db_path, exc)
         yield conn
     finally:
@@ -207,7 +207,7 @@ def acquire_single_instance_lock() -> bool:
     except OSError:
         try:
             handle.close()
-        except Exception:
+        except OSError:
             pass
         return False
 
@@ -226,12 +226,12 @@ def release_single_instance_lock() -> None:
         else:
             import fcntl
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         logger.debug("Instance lock release failed: %s", exc)
     finally:
         try:
             handle.close()
-        except Exception:
+        except OSError:
             pass
 
 
@@ -245,7 +245,7 @@ def _process_memory_percent() -> float | None:
         return None
     try:
         return float(psutil.Process().memory_percent())
-    except Exception:
+    except (psutil.Error, OSError, ValueError):
         return None
 
 # Search ranking is intentionally limited to performer matching.
@@ -297,7 +297,7 @@ def _search_cache_key(query: str) -> str:
 def _short_id(s: object, n: int = 10) -> str:
     try:
         ss = str(s or "")
-    except Exception:
+    except (TypeError, ValueError):
         ss = ""
     if not ss:
         return ""
@@ -449,7 +449,7 @@ class TrackInfo:
                 youtube_id = self.youtube_id or self.track_id
                 if youtube_id:
                     return f"yt:{youtube_id}"
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             pass
         raw = f"{self.source}|{self.artist}|{self.title}|{self.duration_sec}|{self.vk_url or ''}"
         return "h:" + hashlib.md5(raw.encode('utf-8', errors='ignore')).hexdigest()
@@ -549,7 +549,7 @@ def _track_uid_from_any(track: Any) -> str:
         uid = track.get('uid')
         if uid:
             return str(uid)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         uid = None
     try:
         src = _source_code(track.get('source') or 'vk')
@@ -561,12 +561,12 @@ def _track_uid_from_any(track: Any) -> str:
             youtube_id = track.get('youtube_id') or track.get('track_id')
             if youtube_id:
                 return f"yt:{youtube_id}"
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         pass
     raw = None
     try:
         raw = f"{track.get('source','')}|{track.get('artist','')}|{track.get('title','')}|{track.get('duration',0)}|{track.get('url','')}"
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         raw = str(track)
     return "h:" + hashlib.md5(str(raw).encode('utf-8', errors='ignore')).hexdigest()
 
@@ -4060,8 +4060,8 @@ class AsyncMusicBot:
                 lru_hit = self._tg_lru_get(key)
             if lru_hit:
                 return lru_hit
-        except Exception:
-            pass
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            logger.debug("Telegram cache or SQLite fallback failed", exc_info=True)
 
         cache_key = f"tg_file_id:{key}"
 
@@ -4073,11 +4073,11 @@ class AsyncMusicBot:
                 try:
                     async with self._tg_file_id_lock:
                         self._tg_lru_set(key, file_id)
-                except Exception:
-                    pass
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                    logger.debug("Telegram LRU cache update failed", exc_info=True)
                 return file_id
-        except Exception:
-            pass
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            logger.debug("Telegram cache or SQLite fallback failed", exc_info=True)
 
         # 2) SQLite (single reused connection)
         try:
@@ -4095,16 +4095,16 @@ class AsyncMusicBot:
                 # warm both caches
                 try:
                     await self.cache.set(cache_key, {"file_id": file_id}, ttl=60 * 60 * 24 * 30)
-                except Exception:
-                    pass
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                    logger.debug("Telegram cache warm-up failed", exc_info=True)
                 try:
                     async with self._tg_file_id_lock:
                         self._tg_lru_set(key, file_id)
-                except Exception:
-                    pass
+                except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+                    logger.debug("Telegram LRU cache update failed", exc_info=True)
                 return file_id
-        except Exception:
-            pass
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            logger.debug("Telegram cache or SQLite fallback failed", exc_info=True)
 
         return None
 
@@ -4687,7 +4687,7 @@ async def download_and_send_audio(update: Update, context: CallbackContext, mess
                     getattr(sent_msg.audio, 'duration', None),
                     track.get('vk_key')
                 )
-            except Exception as e:
+            except Exception:
                 # Keep UX working, but log loudly and at least warm local LRU
                 logger.exception("Failed to persist Telegram file_id cache for %s - %s", track.get("artist"), track.get("title"))
                 try:
@@ -7661,8 +7661,8 @@ class UserStore:
             d = json.loads(track_json or "{}")
             if isinstance(d, dict):
                 return d
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError):
+            logger.debug("Invalid track JSON", exc_info=True)
         return {}
 
     async def get_preferences(self, user_id: int) -> dict[str, Any]:
@@ -7874,20 +7874,20 @@ def _is_admin(user_id: int) -> bool:
     """
     try:
         uid = int(user_id)
-    except Exception:
+    except (TypeError, ValueError):
         return False
     try:
         admin_ids = getattr(config, "ADMIN_IDS", None) or []
         if uid in {int(x) for x in admin_ids}:
             return True
-    except Exception:
-        pass
+    except (TypeError, ValueError):
+        logger.debug("Invalid ADMIN_IDS configuration", exc_info=True)
     try:
         owner_id = getattr(config, "OWNER_ID", None)
         if owner_id is not None and uid == int(owner_id):
             return True
-    except Exception:
-        pass
+    except (TypeError, ValueError):
+        logger.debug("Invalid OWNER_ID configuration", exc_info=True)
     return False
 
 def _admin_keyboard():
@@ -8031,7 +8031,7 @@ def _fmt_onoff(v: Any) -> str:
 def _safe_int(s: str) -> int | None:
     try:
         return int(str(s).strip())
-    except Exception:
+    except (TypeError, ValueError):
         return None
 
 async def _show_admin_stats(query, days: int = 7):
@@ -9086,7 +9086,7 @@ async def _run_user_mix(application: Application, subscription: dict[str, Any]) 
             await safe_send_message(application.bot, **kwargs)
     except asyncio.CancelledError:
         raise
-    except Exception as exc:
+    except Exception:
         logger.exception("User mix failed")
         kwargs = {
             "chat_id": int(subscription["chat_id"]),
@@ -10022,7 +10022,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
     if action.startswith("digest:edit_schedule:"):
         try:
             subscription_id = int(action.rsplit(":", 1)[1])
-        except Exception:
+        except (TypeError, ValueError):
             subscription_id = 0
         subscription = await bot_instance.digest_store.get_subscription(subscription_id, chat_id)
         if not subscription:
@@ -10080,7 +10080,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
             return
         try:
             state["thread_id"] = max(0, int(action.rsplit(":", 1)[1]))
-        except Exception:
+        except (TypeError, ValueError):
             await safe_answer_callback(query, "Некорректный раздел.", show_alert=True)
             return
         await safe_answer_callback(query)
@@ -10093,7 +10093,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
             return
         try:
             genre_id = int(action.rsplit(":", 1)[1])
-        except Exception:
+        except (TypeError, ValueError):
             genre_id = -1
         if genre_id not in DEEZER_GENRES:
             await safe_answer_callback(query, "Неизвестный жанр.", show_alert=True)
@@ -10110,7 +10110,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
             return
         try:
             day = int(action.rsplit(":", 1)[1])
-        except Exception:
+        except (TypeError, ValueError):
             day = -1
         if day < 0 or day > 6:
             await safe_answer_callback(query, "Некорректный день.", show_alert=True)
@@ -10172,7 +10172,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
             return
         try:
             track_count = int(action.rsplit(":", 1)[1])
-        except Exception:
+        except (TypeError, ValueError):
             track_count = 5
         existing = await bot_instance.digest_store.list_subscriptions(chat_id)
         max_subscriptions = int(getattr(config, "DIGEST_MAX_PER_GROUP", 12) or 12)
@@ -10208,7 +10208,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
     if action.startswith("digest:test:"):
         try:
             subscription_id = int(action.rsplit(":", 1)[1])
-        except Exception:
+        except (TypeError, ValueError):
             subscription_id = 0
         subscription = await bot_instance.digest_store.get_subscription(subscription_id, chat_id)
         if not subscription:
@@ -10230,7 +10230,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
     if action.startswith("digest:toggle:"):
         try:
             subscription_id = int(action.rsplit(":", 1)[1])
-        except Exception:
+        except (TypeError, ValueError):
             subscription_id = 0
         enabled = await bot_instance.digest_store.toggle_enabled(subscription_id, chat_id)
         if enabled is None:
@@ -10243,7 +10243,7 @@ async def handle_digest_callback(update: Update, context: CallbackContext) -> No
     if action.startswith("digest:delete:"):
         try:
             subscription_id = int(action.rsplit(":", 1)[1])
-        except Exception:
+        except (TypeError, ValueError):
             subscription_id = 0
         deleted = await bot_instance.digest_store.delete_subscription(subscription_id, chat_id)
         await safe_answer_callback(query, "Рассылка удалена" if deleted else "Рассылка не найдена")
