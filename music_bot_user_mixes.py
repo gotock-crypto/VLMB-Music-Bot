@@ -23,7 +23,7 @@ import hashlib
 import functools
 try:
     import psutil
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     psutil = None
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -68,7 +68,7 @@ try:
     from yandex_music import Client  # type: ignore
     try:
         from yandex_music import ClientAsync  # type: ignore
-    except Exception:
+    except ImportError:
         ClientAsync = None  # type: ignore
     YANDEX_MUSIC_AVAILABLE = True
 except ImportError:
