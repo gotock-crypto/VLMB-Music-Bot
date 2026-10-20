@@ -1,6 +1,6 @@
 # VLMB Music Bot — безопасное обновление production
 
-Цель этой процедуры — обновить код **без перезаписи SQLite/Redis данных** и с быстрым rollback.
+Цель процедуры — безопасно перевести runtime-хранилище на PostgreSQL, перенести текущие данные из SQLite и сохранить возможность отката кода.
 
 ## 0. Перед первым запуском
 
@@ -9,7 +9,7 @@
 - `/root/MusBot/.env` — секреты;
 - `/root/MusBot/venv/` — виртуальное окружение;
 - `musicbot.service` — systemd unit;
-- `bot_stats.db` и `vk_tokens.db` — production БД.
+- PostgreSQL — единственная runtime-БД. `bot_stats.db` и `vk_tokens.db` используются только как источники одноразовой миграции.
 
 Содержимое `.env` должно быть примерно таким:
 
@@ -19,6 +19,8 @@ YANDEX_TOKEN=ВАШ_YANDEX_TOKEN
 VK_TOKEN=
 LASTFM_API_KEY=ВАШ_LASTFM_API_KEY
 REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=postgresql://vlmb_user:CHANGE_ME@127.0.0.1:5432/vlmb
+DATABASE_TIMEOUT=20
 INSTANCE_LOCK_FILE=
 ```
 
@@ -33,7 +35,7 @@ chown root:root /root/MusBot/.env
 
 ## 1. Проверить release и сделать backup
 
-Новый deployment сначала проверяет release и `.env`, пока текущий бот продолжает работать. Затем автоматически делает backup. Вручную останавливать сервис перед запуском `deploy_release.sh` не нужно.
+Deployment сначала проверяет release и обязательные настройки, затем делает backup и устанавливает зависимости. После остановки бота миграционный скрипт переносит данные из текущих SQLite-файлов в PostgreSQL в одной транзакции. Источники SQLite не удаляются. Вручную останавливать сервис перед запуском `deploy_release.sh` не нужно.
 
 ```bash
 cd /root/vlmb_release/MusBot
@@ -89,7 +91,7 @@ rsync -a --delete \
   /root/vlmb_release/MusBot/ /root/MusBot/
 ```
 
-Это критически важно: production БД и `.env` остаются на месте.
+Это критически важно: `.env` и исходные SQLite-файлы остаются на месте для безопасного отката и аудита; после переключения приложение работает только с PostgreSQL.
 
 ## 5. Обновить systemd unit
 
@@ -98,7 +100,7 @@ cp /root/MusBot/systemd/vlmb-musicbot.service /etc/systemd/system/musicbot.servi
 systemctl daemon-reload
 ```
 
-## 6. Проверить окружение и БД
+## 6. Проверить окружение и PostgreSQL
 
 ```bash
 cd /root/MusBot

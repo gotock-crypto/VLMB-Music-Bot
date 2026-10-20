@@ -1,8 +1,4 @@
-"""Small explicit state machine for user interaction auditing.
-
-The Telegram layer can remain backward compatible while transitions are
-registered and tested independently of Telegram objects.
-"""
+"""Small explicit state machine for user interaction auditing."""
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable
@@ -36,8 +32,6 @@ class StateMachine:
     def transitions(self) -> tuple[Transition, ...]:
         return tuple(self._map.values())
 
-# Critical user-facing flow states. The existing bot may carry richer state
-# payloads; this machine models the lifecycle that must remain valid.
 CRITICAL_TRANSITIONS = (
     Transition("idle", "search", "searching"),
     Transition("idle", "charts", "charts"),

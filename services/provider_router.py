@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Iterable, List
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 
 class ProviderFailure(RuntimeError):

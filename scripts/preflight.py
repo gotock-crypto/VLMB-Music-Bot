@@ -6,16 +6,15 @@ import argparse
 import importlib.util
 import os
 import shlex
-import sqlite3
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
 
-REQUIRED = ["TELEGRAM_BOT_TOKEN"]
+REQUIRED = ["TELEGRAM_BOT_TOKEN", "DATABASE_URL"]
 OPTIONAL = ["YANDEX_TOKEN", "VK_TOKEN", "LASTFM_API_KEY", "REDIS_URL"]
-DEPS = ["aiohttp", "aiosqlite", "redis", "telegram", "yt_dlp", "yandex_music", "openpyxl", "psutil"]
+DEPS = ["aiohttp", "asyncpg", "redis", "telegram", "yt_dlp", "yandex_music", "openpyxl", "psutil"]
 
 failed = 0
 
@@ -65,6 +64,7 @@ def check(ok: bool, label: str, detail: str = "") -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--skip-dependency-check", action="store_true", help="skip installed-package checks before deployment dependencies are installed")
     parser.add_argument(
         "--env-file",
         type=Path,
@@ -84,23 +84,16 @@ def main() -> int:
         value = env.get(name, "").strip()
         print(f"{'INFO' if value else 'WARN'}  env {name} — {'set' if value else 'empty'}")
 
-    for dep in DEPS:
-        check(importlib.util.find_spec(dep) is not None, f"dependency {dep}")
+    if not args.skip_dependency_check:
+        for dep in DEPS:
+            check(importlib.util.find_spec(dep) is not None, f"dependency {dep}")
 
     for path in (ROOT / "music_bot_user_mixes.py", ROOT / "config.py"):
         check(path.exists(), f"file {path.name}")
 
-    for db in (ROOT / "bot_stats.db", ROOT / "vk_tokens.db"):
-        if db.exists():
-            try:
-                con = sqlite3.connect(str(db), timeout=20)
-                result = con.execute("PRAGMA integrity_check").fetchone()[0]
-                con.close()
-                check(result == "ok", f"SQLite {db.name}", str(result))
-            except Exception as exc:
-                check(False, f"SQLite {db.name}", str(exc))
-        else:
-            print(f"INFO  {db.name} — not present (will be created if applicable)")
+    check(bool(env.get("DATABASE_URL", "").strip()), "PostgreSQL DATABASE_URL", "set" if env.get("DATABASE_URL", "").strip() else "MISSING")
+    check((ROOT / "storage" / "postgres.py").exists(), "PostgreSQL adapter")
+    check((ROOT / "scripts" / "migrate_sqlite_to_postgres.py").exists(), "SQLite-to-PostgreSQL migration tool")
 
     print(f"\nPreflight {'OK' if failed == 0 else 'FAILED'}")
     return 1 if failed else 0
