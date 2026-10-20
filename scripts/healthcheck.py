@@ -5,11 +5,30 @@ from __future__ import annotations
 import os
 import re
 import shutil
-import sqlite3
+import shlex
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 os.chdir(ROOT)
+
+# Load the protected dotenv file for this one-off check without printing values.
+_env_file = ROOT / ".env"
+if _env_file.exists():
+    for _raw in _env_file.read_text(encoding="utf-8").splitlines():
+        _line = _raw.strip()
+        if not _line or _line.startswith("#"):
+            continue
+        if _line.startswith("export "):
+            _line = _line[7:].lstrip()
+        if "=" not in _line:
+            continue
+        _key, _value = _line.split("=", 1)
+        try:
+            _parts = shlex.split(_value.strip(), comments=True, posix=True)
+            _value = _parts[0] if _parts else ""
+        except ValueError:
+            _value = _value.strip("\"'")
+        os.environ.setdefault(_key.strip(), _value)
 
 fail = 0
 
@@ -31,15 +50,23 @@ for log in (ROOT / "bot.log", ROOT / "bot-debug.log"):
         text = log.read_text(errors="ignore")
         report(not re.search(r"api\.telegram\.org/bot[0-9]{5,}:[A-Za-z0-9_-]+", text), f"no Telegram token in {log.name}")
 
-for db in (ROOT / "bot_stats.db", ROOT / "vk_tokens.db"):
-    if db.exists():
+# Verify the configured PostgreSQL endpoint without printing credentials.
+try:
+    import asyncio
+    import asyncpg
+    async def _check_postgres():
+        dsn = os.getenv("DATABASE_URL", "").strip()
+        if not dsn:
+            raise RuntimeError("DATABASE_URL is not set")
+        conn = await asyncpg.connect(dsn=dsn, timeout=5)
         try:
-            con = sqlite3.connect(str(db))
-            integrity = con.execute("PRAGMA integrity_check").fetchone()[0]
-            con.close()
-            report(integrity == "ok", f"SQLite integrity {db.name}", integrity)
-        except Exception as exc:
-            report(False, f"SQLite integrity {db.name}", str(exc))
+            return await conn.fetchval("SELECT 1")
+        finally:
+            await conn.close()
+    result = asyncio.run(_check_postgres())
+    report(result == 1, "PostgreSQL connectivity", "SELECT 1")
+except Exception as exc:
+    report(False, "PostgreSQL connectivity", f"{type(exc).__name__}: {exc}")
 
 usage = shutil.disk_usage(ROOT)
 free_gb = usage.free / (1024**3)

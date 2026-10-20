@@ -23,7 +23,7 @@ import hashlib
 import functools
 try:
     import psutil
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     psutil = None
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from contextlib import asynccontextmanager
 from pathlib import Path
 import redis.asyncio as redis
-import aiosqlite
+from storage.postgres import connect as _pg_connect, PgConnection
 import aiofiles
 import aiofiles.os as async_os
 import openpyxl
@@ -68,7 +68,7 @@ try:
     from yandex_music import Client  # type: ignore
     try:
         from yandex_music import ClientAsync  # type: ignore
-    except ImportError:
+    except Exception:
         ClientAsync = None  # type: ignore
     YANDEX_MUSIC_AVAILABLE = True
 except ImportError:
@@ -112,13 +112,9 @@ logging.getLogger("httpcore").propagate = False
 logger = logging.getLogger(__name__)
 
 
-def _sqlite_connect(db_path: str, **kwargs):
-    """Create SQLite connections with one consistent busy timeout."""
-    kwargs.setdefault(
-        "timeout",
-        float(getattr(config, "DATABASE_TIMEOUT", 20) or 20),
-    )
-    return aiosqlite.connect(db_path, **kwargs)
+async def _sqlite_connect(db_path: str, **kwargs):
+    """Backward-compatible name; all persistence now uses PostgreSQL."""
+    return await _pg_connect(db_path, **kwargs)
 
 
 @asynccontextmanager
@@ -126,11 +122,6 @@ async def _sqlite_connection(db_path: str, **kwargs):
     """Context-managed SQLite connection with a configured busy timeout."""
     conn = await _sqlite_connect(db_path, **kwargs)
     try:
-        timeout_ms = max(1, int(float(getattr(config, "DATABASE_TIMEOUT", 20) or 20) * 1000))
-        try:
-            await conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
-        except Exception as exc:
-            logger.debug("SQLite busy_timeout setup failed for %s: %s", db_path, exc)
         yield conn
     finally:
         await conn.close()
@@ -2663,6 +2654,10 @@ class AsyncFileManager:
         deleted_count = 0
         
         try:
+            if not self.temp_dir or not os.path.isdir(self.temp_dir):
+                logger.warning("Temp directory is unavailable, skipping cleanup: %s", self.temp_dir)
+                return
+
             files = await async_os.listdir(self.temp_dir)
             for filename in files:
                 path = os.path.join(self.temp_dir, filename)
@@ -2791,7 +2786,7 @@ class AsyncMusicBot:
         self._tg_file_id_lock = asyncio.Lock()
 
         # --- SQLite reuse for tg_audio_cache (reduces connect/close overhead) ---
-        self._tg_db_conn: Optional[aiosqlite.Connection] = None
+        self._tg_db_conn: Optional[PgConnection] = None
         self._tg_db_lock = asyncio.Lock()
 
         # --- Excel warmup concurrency limiter ---
@@ -3984,7 +3979,7 @@ class AsyncMusicBot:
         return keys
 
 
-    async def _ensure_tg_db_conn(self) -> aiosqlite.Connection:
+    async def _ensure_tg_db_conn(self) -> PgConnection:
         """Keep a single aiosqlite connection for tg_audio_cache to avoid per-call connect overhead."""
         if getattr(self, "_tg_db_conn", None) is not None:
             return self._tg_db_conn
@@ -4018,7 +4013,7 @@ class AsyncMusicBot:
     async def _tg_db_path(self) -> str:
         return getattr(config, "TG_FILE_CACHE_DB", "bot_stats.db")
 
-    async def _ensure_tg_audio_cache_table(self, conn: aiosqlite.Connection) -> None:
+    async def _ensure_tg_audio_cache_table(self, conn: PgConnection) -> None:
         await conn.execute(
             """CREATE TABLE IF NOT EXISTS tg_audio_cache(
                 query_key TEXT PRIMARY KEY,
@@ -6390,8 +6385,8 @@ class AdminDB:
             await conn.executemany(
                 "INSERT INTO user_usage_context(user_id,context,first_seen,last_seen) VALUES(?,?,?,?) "
                 "ON CONFLICT(user_id,context) DO UPDATE SET "
-                "first_seen=MIN(user_usage_context.first_seen, excluded.first_seen), "
-                "last_seen=MAX(user_usage_context.last_seen, excluded.last_seen)",
+                "first_seen=LEAST(user_usage_context.first_seen, excluded.first_seen), "
+                "last_seen=GREATEST(user_usage_context.last_seen, excluded.last_seen)",
                 [
                     (user_id, context_name, timestamps[0], timestamps[1])
                     for (user_id, context_name), timestamps in recovered.items()

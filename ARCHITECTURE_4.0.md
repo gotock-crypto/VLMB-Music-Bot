@@ -15,7 +15,7 @@ domain (models, policies, errors)
 providers          storage
    |                 |
    v                 v
-YM / VK / YT      SQLite / session state
+YM / VK / YT      PostgreSQL persistence / Redis session state
 ```
 
 ## Migration rule

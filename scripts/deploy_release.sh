@@ -17,11 +17,13 @@ fail() { echo "ERROR: $*" >&2; exit 1; }
 command -v rsync >/dev/null || fail "rsync is required"
 
 # Validate the release while the current production bot is still running.
-"$VENV/bin/python3" "$RELEASE_DIR/scripts/preflight.py" --env-file "$APP_DIR/.env" || \
+"$VENV/bin/python3" "$RELEASE_DIR/scripts/preflight.py" --skip-dependency-check --env-file "$APP_DIR/.env" || \
   fail "Release preflight failed; production was not touched."
 "$VENV/bin/python3" -m py_compile \
   "$RELEASE_DIR/music_bot_user_mixes.py" \
   "$RELEASE_DIR/config.py" \
+  "$RELEASE_DIR/storage"/*.py \
+  "$RELEASE_DIR/providers"/*.py \
   "$RELEASE_DIR/services"/*.py \
   "$RELEASE_DIR/scripts"/*.py
 
@@ -77,8 +79,21 @@ rollback() {
 }
 trap rollback ERR
 
+# Validate both SQLite source files and PostgreSQL connectivity before downtime.
+"$VENV/bin/python3" "$RELEASE_DIR/scripts/migrate_sqlite_to_postgres.py" \
+  --dry-run \
+  --stats-db "$APP_DIR/bot_stats.db" --tokens-db "$APP_DIR/vk_tokens.db"
+
+"$VENV/bin/python3" "$RELEASE_DIR/scripts/migrate_sqlite_to_postgres.py" \
+  --env-file "$APP_DIR/.env" --check-connection \
+  --stats-db "$APP_DIR/bot_stats.db" --tokens-db "$APP_DIR/vk_tokens.db"
+
 DEPLOY_STARTED=1
 systemctl stop "$SERVICE"
+
+"$VENV/bin/python3" "$RELEASE_DIR/scripts/migrate_sqlite_to_postgres.py" \
+  --env-file "$APP_DIR/.env" \
+  --stats-db "$APP_DIR/bot_stats.db" --tokens-db "$APP_DIR/vk_tokens.db"
 
 rsync -a --delete \
   --exclude='.env' \

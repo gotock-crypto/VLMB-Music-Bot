@@ -1,3 +1,28 @@
+## RC3 PostgreSQL compatibility correction
+
+- PostgreSQL adapter now preserves explicit write transaction boundaries: DML remains pending until `commit()`, `rollback()`, or connection close; uncommitted writes are rolled back on close.
+- Added offline regression tests for commit and rollback behavior.
+- Live PostgreSQL integration and production migration remain unverified and are required before deployment.
+
+# VLMB 4.0.0-rc2-postgresql — Release Notes
+
+## PostgreSQL migration hardening
+
+- Widened SQLite `INTEGER` declarations to PostgreSQL `BIGINT` in the runtime compatibility adapter, preserving Telegram IDs and counters.
+- Fixed generated-ID retrieval for `group_digest_subscriptions` inserts.
+- Made placeholder conversion safe around quoted strings and SQL comments.
+- Applied generic `ON CONFLICT DO NOTHING` translation for SQLite `INSERT OR IGNORE`.
+- Fail closed for unsupported `INSERT OR REPLACE` tables rather than silently changing semantics.
+- Avoided sequence-reset errors for tables whose `id` column is not sequence-backed.
+- Added offline adapter regression tests.
+
+## Validation status
+
+- Python syntax checks passed.
+- Focused PostgreSQL adapter and migration unit tests passed.
+- SQLite migration dry-run passed against both source database files extracted from the supplied archive.
+- Live PostgreSQL migration, data-count comparison on the production databases, and Telegram end-to-end smoke tests have not been run. Do not cut over until PostgreSQL is installed/configured and those checks pass.
+
 ## Favorite callback UID fix
 
 - Fixed the native favorite callback for provider-prefixed track IDs.

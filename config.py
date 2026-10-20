@@ -17,12 +17,12 @@ LASTFM_API_KEY = _env("LASTFM_API_KEY", "").strip()
 OWNER_ID = 0
 ADMIN_IDS = [7250728575]
 
-# SQLite files. Paths are intentionally unchanged.
-STATS_DB_PATH = "bot_stats.db"
-TG_FILE_CACHE_DB = "bot_stats.db"
-VK_TOKENS_DB_PATH = "vk_tokens.db"
-DB_WAL_MODE = True
-DATABASE_TIMEOUT = 20
+# PostgreSQL is the only runtime database. Legacy path constants remain as logical store names.
+DATABASE_URL = _env("DATABASE_URL", "").strip()
+DATABASE_TIMEOUT = float(_env("DATABASE_TIMEOUT", "20") or 20)
+STATS_DB_PATH = "bot_stats"
+TG_FILE_CACHE_DB = "bot_stats"
+VK_TOKENS_DB_PATH = "bot_stats"
 
 # Redis and transient user/search sessions.
 REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0").strip()

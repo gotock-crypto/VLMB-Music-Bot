@@ -1,6 +1,14 @@
-import sqlite3
+import os
+
+import asyncpg
 
 import pytest
+
+pytestmark = pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires a dedicated PostgreSQL test database via TEST_DATABASE_URL")
+
+@pytest.fixture(autouse=True)
+def _configure_test_database(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
 
 from music_bot_user_mixes import UserStore, _track_uid_from_any
 
@@ -39,12 +47,11 @@ async def test_pending_favorite_expires(tmp_path):
     await store.set_pending_favorite(7, uid, track)
 
     # Force an old timestamp to verify stale records are ignored.
-    conn = sqlite3.connect(db)
+    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
     try:
-        conn.execute("UPDATE user_pending_favorite SET ts=? WHERE user_id=?", (0, 7))
-        conn.commit()
+        await conn.execute("UPDATE user_pending_favorite SET ts=$1 WHERE user_id=$2", 0, 7)
     finally:
-        conn.close()
+        await conn.close()
 
     assert await store.get_pending_favorite(7, max_age_seconds=300) is None
 

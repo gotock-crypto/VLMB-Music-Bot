@@ -40,7 +40,7 @@ cd /root/vlmb_release/MusBot
 RELEASE_DIR=/root/vlmb_release/MusBot ./scripts/deploy_release.sh
 ```
 
-The script creates a backup, preserves `.env`, SQLite, logs and `venv`, installs dependencies, switches code, restarts the service, runs health checks and automatically rolls back after a failed cutover.
+The script creates a backup, preserves `.env`, legacy SQLite migration sources, logs and `venv`, installs dependencies, migrates `bot_stats.db` and `vk_tokens.db` additively into PostgreSQL, switches code, restarts the service, runs PostgreSQL health checks and automatically rolls back the code on a failed cutover. The PostgreSQL data import is additive and does not delete source SQLite files.
 
 ## 5. Enable monitoring
 
@@ -99,4 +99,4 @@ Use the backup printed by deployment:
 /root/MusBot/scripts/rollback_release.sh /root/MusBot-backup-YYYYMMDD-HHMMSS.tar.gz
 ```
 
-Never overwrite the production `.env`, SQLite databases or `venv` with archive contents.
+Never overwrite the production `.env`, legacy SQLite migration sources or `venv` with archive contents. Set `DATABASE_URL` in `.env` before deployment; the target PostgreSQL database and role must already exist.

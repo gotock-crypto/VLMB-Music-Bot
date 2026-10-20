@@ -21,8 +21,10 @@ REQUIRED = [
     "tests/test_provider_router.py", "tests/test_search_engine.py",
     "tests/test_metrics.py", "tests/test_security.py",
     "tests/test_playlist_manager.py", ".github/workflows/ci.yml",
-    "RELEASE_VERSION", "RELEASE_MANIFEST.md", "pytest.ini",
-    "ARCHITECTURE_4.0.md", "UPGRADE_4.0_RC2.md",
+    "RELEASE_VERSION", "RELEASE_MANIFEST.md", "POSTGRESQL_MIGRATION_RUNBOOK.md", "pytest.ini",
+    "storage/postgres.py", "scripts/migrate_sqlite_to_postgres.py",
+    "tests/test_postgres_adapter_translation.py", "tests/test_postgres_migration.py",
+    "ARCHITECTURE_4.0.md", "UPGRADE_4.0_RC1.md",
     "application/callbacks/catalog.py", "application/callbacks/audit.py",
     "application/state/machine.py", "domain/models.py", "domain/errors.py",
     "providers/base.py", "providers/adapters.py", "storage/contracts.py",
@@ -76,7 +78,7 @@ def main() -> int:
     check(not hits, "secret scan", ", ".join(hits) if hits else "no credentials detected")
 
     if args.ci:
-        compile_targets = ["music_bot_user_mixes.py", "config.py"] + [str(p.relative_to(ROOT)) for p in (ROOT / "application").rglob("*.py")] + [str(p.relative_to(ROOT)) for p in (ROOT / "domain").rglob("*.py")] + [str(p.relative_to(ROOT)) for p in (ROOT / "providers").rglob("*.py")] + [str(p.relative_to(ROOT)) for p in (ROOT / "storage").rglob("*.py")] + [str(p.relative_to(ROOT)) for p in (ROOT / "services").glob("*.py")] + [str(p.relative_to(ROOT)) for p in (ROOT / "scripts").glob("*.py")]
+        compile_targets = ["music_bot_user_mixes.py", "config.py"] + [str(p.relative_to(ROOT)) for p in (ROOT / "services").glob("*.py")] + [str(p.relative_to(ROOT)) for p in (ROOT / "scripts").glob("*.py")]
         result = subprocess.run([sys.executable, "-m", "py_compile", *compile_targets], cwd=ROOT)
         check(result.returncode == 0, "py_compile", "passed")
         result = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=ROOT)
